@@ -127,7 +127,7 @@ func forwardToBot(msg IncomingMessage) {
 		return
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Post(webhookURL, "application/json", bytes.NewBuffer(jsonData))
 	if err != nil {
 		log.Printf("[bridge] error forwarding to bot: %v", err)
