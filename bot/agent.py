@@ -20,7 +20,35 @@ TIMEZONE = os.getenv("TIMEZONE", "America/Argentina/Cordoba")
 BOT_NAME = os.getenv("BOT_NAME", "Bot")
 CALENDAR_ID = os.getenv("CALENDAR_ID", "primary")  # ID del calendario a usar
 
+# Modelos: Haiku para chat simple, Sonnet para tool-use
+MODEL_HAIKU  = "claude-haiku-4-5"
+MODEL_SONNET = "claude-sonnet-4-6"
+
 client = AsyncAnthropic()
+
+_CLASSIFY_SYSTEM = (
+    "Clasificá el mensaje según si necesita acceder a datos externos. "
+    "Respondé ÚNICAMENTE con una palabra.\n"
+    "TOOLS → si menciona o implica: calendario, eventos, vencimientos, audiencias, reuniones, "
+    "casos, expedientes, carátulas, horas, tiempo trabajado, notas, minutas, documentos, drive, clima.\n"
+    "CHAT  → saludos, ayuda, qué podés hacer, preguntas generales sin datos del estudio."
+)
+
+
+async def _classify(message: str) -> str:
+    """Llama a Haiku para determinar si el mensaje necesita herramientas."""
+    try:
+        resp = await client.messages.create(
+            model=MODEL_HAIKU,
+            max_tokens=5,
+            system=_CLASSIFY_SYSTEM,
+            messages=[{"role": "user", "content": message}],
+        )
+        result = resp.content[0].text.strip().upper()
+        return "TOOLS" if "TOOLS" in result else "CHAT"
+    except Exception:
+        logger.warning("Classification failed, defaulting to TOOLS", exc_info=True)
+        return "TOOLS"  # safe default: never degrade quality
 
 SYSTEM_PROMPT = """Sos un asistente virtual para el estudio jurídico Del Castillo, ubicado en Córdoba, Argentina.
 
@@ -114,18 +142,29 @@ async def process_message(message: str, sender_name: str, chat_id: str) -> str:
 
     user_content = f"[{sender_name}]: {message}"
 
+    # Route: classify first with Haiku, then pick model + tools
+    intent = await _classify(message)
+    if intent == "TOOLS":
+        model, tools = MODEL_SONNET, ALL_TOOLS
+    else:
+        model, tools = MODEL_HAIKU, []
+    logger.info("Routing '%s...' → %s (%s)", message[:40], model.split("-")[1], intent)
+
     # Build messages with history
     messages = _get_history(chat_id) + [{"role": "user", "content": user_content}]
 
     # Tool-use loop (max 8 iterations to prevent runaway)
     for _ in range(8):
-        response = await client.messages.create(
-            model="claude-sonnet-4-6",
+        kwargs = dict(
+            model=model,
             max_tokens=1024,
             system=system,
-            tools=ALL_TOOLS,
             messages=messages,
         )
+        if tools:
+            kwargs["tools"] = tools
+
+        response = await client.messages.create(**kwargs)
 
         if response.stop_reason == "tool_use":
             # Serialize assistant content for message history
