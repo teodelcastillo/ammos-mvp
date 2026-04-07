@@ -175,7 +175,8 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleQR(w http.ResponseWriter, r *http.Request) {
-	if waClient != nil && waClient.IsConnected() {
+	// Verificar sesión real (Store.ID != nil significa que está autenticado)
+	if waClient != nil && waClient.Store.ID != nil && waClient.IsConnected() {
 		w.Header().Set("Content-Type", "text/html")
 		fmt.Fprint(w, `<html><body style="font-family:Arial;text-align:center;padding:50px">
 			<h2>WhatsApp ya esta conectado</h2></body></html>`)
