@@ -250,6 +250,26 @@ func main() {
 	waClient = whatsmeow.NewClient(deviceStore, clientLog)
 	waClient.AddEventHandler(eventHandler)
 
+	// Arrancar HTTP server ANTES del QR para que /qr sea accesible
+	mux := http.NewServeMux()
+	mux.HandleFunc("/send", handleSend)
+	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/qr", handleQR)
+
+	server := &http.Server{
+		Addr:         listenAddr,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+
+	go func() {
+		log.Printf("[bridge] HTTP server on %s", listenAddr)
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
+
 	// Connect — show QR if first time
 	if waClient.Store.ID == nil {
 		qrChan, _ := waClient.GetQRChannel(context.Background())
@@ -283,26 +303,6 @@ func main() {
 	}
 
 	log.Println("[bridge] WhatsApp connected!")
-
-	// HTTP server for bot communication
-	mux := http.NewServeMux()
-	mux.HandleFunc("/send", handleSend)
-	mux.HandleFunc("/health", handleHealth)
-	mux.HandleFunc("/qr", handleQR)
-
-	server := &http.Server{
-		Addr:         listenAddr,
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-	}
-
-	go func() {
-		log.Printf("[bridge] HTTP server on %s", listenAddr)
-		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
-		}
-	}()
 
 	// Graceful shutdown
 	c := make(chan os.Signal, 1)
