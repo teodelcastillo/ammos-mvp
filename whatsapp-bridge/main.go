@@ -197,14 +197,14 @@ func handleQR(w http.ResponseWriter, r *http.Request) {
 		<h2>Escaneá este QR con WhatsApp</h2>
 		<p>WhatsApp > Dispositivos vinculados > Vincular dispositivo</p>
 		<div id="qr"></div>
-		<p><small>Se actualiza cada 30s</small></p>
+		<p><small>Se actualiza cada 5 segundos automaticamente</small></p>
 		<script>
 			new QRCode(document.getElementById("qr"), {
 				text: %q,
 				width: 300,
 				height: 300
 			});
-			setTimeout(()=>location.reload(), 30000);
+			setTimeout(()=>location.reload(), 5000);
 		</script>
 	</body></html>`, currentQRCode)
 }
@@ -256,16 +256,25 @@ func main() {
 		if err := waClient.Connect(); err != nil {
 			log.Fatalf("Failed to connect: %v", err)
 		}
+		scanned := false
 		for evt := range qrChan {
 			if evt.Event == "code" {
 				currentQRCode = evt.Code
 				fmt.Println("\n========== ESCANEA ESTE QR CON WHATSAPP ==========")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 				fmt.Println("===================================================")
-				fmt.Printf("\nO abrí en el navegador: /qr\n\n")
+				fmt.Printf("\nO abrí en el navegador: https://efficient-spirit-production.up.railway.app/qr\n\n")
+			} else if evt.Event == "success" {
+				scanned = true
+				log.Println("[bridge] QR escaneado exitosamente!")
 			} else {
 				log.Printf("[bridge] QR event: %s", evt.Event)
 			}
+		}
+		// Si el canal se cerró sin escanear, reiniciar para generar nuevo QR
+		if !scanned {
+			log.Println("[bridge] QR expiró sin escanear, reiniciando...")
+			os.Exit(1)
 		}
 	} else {
 		if err := waClient.Connect(); err != nil {
