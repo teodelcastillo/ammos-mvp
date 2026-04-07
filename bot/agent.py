@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -18,7 +19,20 @@ logger = logging.getLogger(__name__)
 
 TIMEZONE = os.getenv("TIMEZONE", "America/Argentina/Cordoba")
 BOT_NAME = os.getenv("BOT_NAME", "Bot")
-CALENDAR_ID = os.getenv("CALENDAR_ID", "primary")  # ID del calendario a usar
+def _decode_calendar_id(raw: str) -> str:
+    """Si el CALENDAR_ID viene en base64 (sin '@'), lo decodifica automáticamente."""
+    if raw and "@" not in raw:
+        try:
+            padded = raw + "=" * (4 - len(raw) % 4)
+            decoded = base64.b64decode(padded).decode("utf-8")
+            if "@" in decoded:
+                logger.info("CALENDAR_ID decodificado de base64: %s", decoded)
+                return decoded
+        except Exception:
+            pass
+    return raw
+
+CALENDAR_ID = _decode_calendar_id(os.getenv("CALENDAR_ID", "primary"))
 
 # Modelos: Haiku para chat simple, Sonnet para tool-use
 MODEL_HAIKU  = "claude-haiku-4-5"
