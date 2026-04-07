@@ -25,9 +25,10 @@ import (
 )
 
 var (
-	waClient   *whatsmeow.Client
-	botName    string
-	webhookURL string
+	waClient      *whatsmeow.Client
+	botName       string
+	webhookURL    string
+	currentQRCode string // último código QR recibido
 )
 
 // IncomingMessage is sent to the bot service when a WhatsApp message is received.
@@ -173,6 +174,41 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "sent"})
 }
 
+func handleQR(w http.ResponseWriter, r *http.Request) {
+	if waClient != nil && waClient.IsConnected() {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body style="font-family:Arial;text-align:center;padding:50px">
+			<h2>WhatsApp ya esta conectado</h2></body></html>`)
+		return
+	}
+	if currentQRCode == "" {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<html><body style="font-family:Arial;text-align:center;padding:50px">
+			<h2>Esperando QR...</h2><p>Recarga la pagina en unos segundos.</p>
+			<script>setTimeout(()=>location.reload(), 3000)</script></body></html>`)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html")
+	fmt.Fprintf(w, `<html><head>
+		<script src="https://cdn.jsdelivr.net/npm/qrcodejs/qrcode.min.js"></script>
+		<style>body{font-family:Arial;text-align:center;padding:50px}
+		#qr{display:inline-block;margin:20px}</style>
+	</head><body>
+		<h2>Escaneá este QR con WhatsApp</h2>
+		<p>WhatsApp > Dispositivos vinculados > Vincular dispositivo</p>
+		<div id="qr"></div>
+		<p><small>Se actualiza cada 30s</small></p>
+		<script>
+			new QRCode(document.getElementById("qr"), {
+				text: %q,
+				width: 300,
+				height: 300
+			});
+			setTimeout(()=>location.reload(), 30000);
+		</script>
+	</body></html>`, currentQRCode)
+}
+
 func handleHealth(w http.ResponseWriter, r *http.Request) {
 	connected := waClient != nil && waClient.IsConnected()
 	w.Header().Set("Content-Type", "application/json")
@@ -222,9 +258,11 @@ func main() {
 		}
 		for evt := range qrChan {
 			if evt.Event == "code" {
+				currentQRCode = evt.Code
 				fmt.Println("\n========== ESCANEA ESTE QR CON WHATSAPP ==========")
 				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
 				fmt.Println("===================================================")
+				fmt.Printf("\nO abrí en el navegador: /qr\n\n")
 			} else {
 				log.Printf("[bridge] QR event: %s", evt.Event)
 			}
@@ -241,6 +279,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/send", handleSend)
 	mux.HandleFunc("/health", handleHealth)
+	mux.HandleFunc("/qr", handleQR)
 
 	server := &http.Server{
 		Addr:         listenAddr,
