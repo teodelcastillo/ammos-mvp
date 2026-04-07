@@ -6,14 +6,18 @@ import httpx
 from fastapi import FastAPI, Request
 
 from agent import process_message
+from admin import router as admin_router
 from db import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("bot")
 
 WA_BRIDGE_URL = os.getenv("WA_BRIDGE_URL", "http://whatsapp-bridge:8080")
+# Palabra clave para activar el bot. Solo responde si el mensaje la contiene.
+BOT_TRIGGER = os.getenv("BOT_TRIGGER", "lexia").lower()
 
 app = FastAPI(title="Del Castillo Bot")
+app.include_router(admin_router)
 
 @app.on_event("startup")
 async def startup():
@@ -40,6 +44,11 @@ async def _process_and_respond(data: dict):
     message = data.get("message", "")
 
     if not message:
+        return
+
+    # Solo responder si el mensaje menciona el nombre del bot
+    if BOT_TRIGGER not in message.lower():
+        logger.debug("Ignored message from %s (trigger '%s' not found)", sender_name, BOT_TRIGGER)
         return
 
     logger.info("Processing message from %s: %s", sender_name, message[:100])
