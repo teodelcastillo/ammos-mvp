@@ -1,0 +1,39 @@
+services:
+  whatsapp-bridge:
+    build: ./whatsapp-bridge
+    container_name: wa-bridge
+    ports:
+      - "8080:8080"
+    volumes:
+      - wa-data:/data
+    environment:
+      - BOT_WEBHOOK_URL=http://bot:8000/webhook
+      - BOT_NAME=${BOT_NAME:-Bot}
+      - LISTEN_ADDR=:8080
+    depends_on:
+      bot:
+        condition: service_started
+    restart: unless-stopped
+
+  bot:
+    build: ./bot
+    container_name: wa-bot
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./credentials:/app/credentials
+      - bot-data:/app/data
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GOOGLE_CREDENTIALS_PATH=/app/credentials/credentials.json
+      - GOOGLE_TOKEN_PATH=/app/credentials/token.json
+      - WA_BRIDGE_URL=http://whatsapp-bridge:8080
+      - BOT_NAME=${BOT_NAME:-Bot}
+      - TIMEZONE=America/Argentina/Cordoba
+      - CALENDAR_ID=${CALENDAR_ID:-primary}
+      - DB_PATH=/app/data/estudio.db
+    restart: unless-stopped
+
+volumes:
+  wa-data:
+  bot-data:
