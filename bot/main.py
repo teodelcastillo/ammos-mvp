@@ -15,6 +15,10 @@ logger = logging.getLogger("bot")
 WA_BRIDGE_URL = os.getenv("WA_BRIDGE_URL", "http://whatsapp-bridge:8080")
 # Palabra clave para activar el bot. Solo responde si el mensaje la contiene.
 BOT_TRIGGER = os.getenv("BOT_TRIGGER", "lexia").lower()
+# Lista de JIDs autorizados separados por coma. Si está vacía, acepta cualquiera.
+# Ejemplos: "5493512345678@s.whatsapp.net" (privado) o "123@g.us" (grupo)
+_raw_allowed = os.getenv("ALLOWED_CHATS", "")
+ALLOWED_CHATS: set[str] = {j.strip() for j in _raw_allowed.split(",") if j.strip()}
 
 app = FastAPI(title="Del Castillo Bot")
 app.include_router(admin_router)
@@ -44,6 +48,11 @@ async def _process_and_respond(data: dict):
     message = data.get("message", "")
 
     if not message:
+        return
+
+    # Solo responder si el chat está en la whitelist (si está configurada)
+    if ALLOWED_CHATS and chat not in ALLOWED_CHATS:
+        logger.debug("Ignored message from %s in %s (not in ALLOWED_CHATS)", sender_name, chat)
         return
 
     # Solo responder si el mensaje menciona el nombre del bot
