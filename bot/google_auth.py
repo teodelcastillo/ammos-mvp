@@ -16,6 +16,8 @@ def _ensure_file_from_env(path: str, env_var: str):
         encoded = os.getenv(env_var)
         if encoded:
             os.makedirs(os.path.dirname(path), exist_ok=True)
+            # Add padding if stripped (common when copy-pasting base64)
+            encoded += "=" * (4 - len(encoded) % 4)
             with open(path, "w") as f:
                 f.write(base64.b64decode(encoded).decode("utf-8"))
 
