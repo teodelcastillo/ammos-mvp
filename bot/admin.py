@@ -837,7 +837,7 @@ def import_preview(user=Depends(require_auth)):
 
     <form method="post" action="/admin/import/run">
       <button class="btn btn-success btn-lg" type="submit"
-              onclick="return confirm('¿Confirmar importación de {stats[&quot;casos_nuevos&quot;]} casos?')">
+              onclick="return confirm('Confirmar importacion de {stats['casos_nuevos']} casos?')">
         <i class="bi bi-cloud-download me-2"></i>Importar {stats['casos_nuevos']} casos
       </button>
       <a href="/admin/import" class="btn btn-outline-secondary ms-2">Cancelar</a>
