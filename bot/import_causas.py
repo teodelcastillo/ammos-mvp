@@ -55,17 +55,24 @@ def _read_sheet() -> list[dict]:
     ).execute()
 
     rows = result.get("values", [])
-    logger.info("Sheet devolvió %d filas. Primera fila: %s", len(rows), rows[0] if rows else "VACÍO")
+    logger.info("Sheet devolvió %d filas totales", len(rows))
     if not rows:
         return []
 
-    # Primera fila = headers
-    raw_headers = [h.strip() for h in rows[0]]
+    # Buscar la primera fila no vacía para usarla como headers
+    header_idx = 0
+    for i, row in enumerate(rows):
+        if any(cell.strip() for cell in row):
+            header_idx = i
+            break
+
+    logger.info("Headers encontrados en fila %d: %s", header_idx + 1, rows[header_idx])
+    raw_headers = [h.strip() for h in rows[header_idx]]
     headers = [HEADER_MAP.get(_normalize(h), _normalize(h)) for h in raw_headers]
-    logger.info("Headers detectados: %s", headers)
+    logger.info("Headers mapeados: %s", headers)
 
     records = []
-    for row in rows[1:]:
+    for row in rows[header_idx + 1:]:
         # Pad row to header length
         padded = row + [""] * (len(headers) - len(row))
         record = dict(zip(headers, padded))
