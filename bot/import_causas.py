@@ -195,7 +195,7 @@ def _read_sheet() -> list[dict]:
 # Importación
 # ──────────────────────────────────────────────
 
-def run_import(dry_run: bool = False) -> dict:
+def run_import(dry_run: bool = False, client_map_override: dict | None = None) -> dict:
     """
     Importa el sheet a la DB.
     dry_run=True: solo reporta qué haría, sin escribir.
@@ -209,11 +209,14 @@ def run_import(dry_run: bool = False) -> dict:
 
     aliases = _load_aliases()
 
-    # Construir mapa de deduplicación sobre todos los nombres únicos del sheet
-    all_raw_names = list(dict.fromkeys(
-        r.get("cliente", "").strip() for r in records if r.get("cliente", "").strip()
-    ))
-    client_map = build_client_map(all_raw_names, aliases)
+    if client_map_override is not None:
+        client_map = client_map_override
+    else:
+        # Construir mapa de deduplicación sobre todos los nombres únicos del sheet
+        all_raw_names = list(dict.fromkeys(
+            r.get("cliente", "").strip() for r in records if r.get("cliente", "").strip()
+        ))
+        client_map = build_client_map(all_raw_names, aliases)
 
     # Grupos con más de 1 variante (para mostrar en preview)
     from collections import defaultdict

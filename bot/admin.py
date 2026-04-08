@@ -10,7 +10,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from db import get_conn, rows_to_list, row_to_dict
-from import_causas import run_import
+import json as _json
+from import_causas import run_import, build_client_map, _load_aliases, _read_sheet
 
 router = APIRouter(prefix="/admin")
 security = HTTPBasic()
@@ -776,55 +777,76 @@ def import_page(user=Depends(require_auth)):
 def import_preview(user=Depends(require_auth)):
     import traceback
     try:
-        stats = run_import(dry_run=True)
+        records   = _read_sheet()
+        aliases   = _load_aliases()
+        all_names = list(dict.fromkeys(
+            r.get("cliente", "").strip() for r in records if r.get("cliente", "").strip()
+        ))
+        client_map = build_client_map(all_names, aliases)
+        stats = run_import(dry_run=True, client_map_override=client_map)
     except Exception as e:
         detail = traceback.format_exc()
         return _page("Error", f'<div class="alert alert-danger"><strong>{type(e).__name__}: {e}</strong><pre class="mt-2 small">{detail}</pre></div>')
 
     if "error" in stats:
-        return _page("Error", f'<div class="alert alert-danger">{stats["error"]}</div>')
+        return _page("Error", f'<div class="alert alert-danger"><pre class="mb-0" style="white-space:pre-wrap">{stats["error"]}</pre></div>')
 
-    to_import = [d for d in stats["detalles"] if d["accion"] == "importar"]
-    to_skip   = [d for d in stats["detalles"] if d["accion"] == "omitido"]
-    merged    = stats.get("merged_groups", [])
+    merged = stats.get("merged_groups", [])
+    n_new  = stats["casos_nuevos"]
 
-    rows_new = "".join(
-        f"""<tr>
-          <td>{r['caratula']}</td>
-          <td>{r.get('cliente','—')}
-            {"<br><small class='text-muted'>← " + r['cliente_original'] + "</small>" if r.get('cliente_original') else ""}
-          </td>
-          <td>{r.get('juzgado','—')}</td>
-        </tr>"""
-        for r in to_import
-    ) or '<tr><td colspan="3" class="text-muted text-center">Sin casos nuevos</td></tr>'
+    # Construir cards editables para cada grupo
+    group_cards = ""
+    for g in merged:
+        canonical = g["canonical"]
+        variants  = g["variants"]
+        chips = "".join(
+            f'''<span class="badge bg-secondary me-1 mb-1 variant-chip" style="font-size:.85rem">
+                  {v}
+                  <button type="button" class="btn-close btn-close-white ms-1" style="font-size:.6rem"
+                          onclick="separateVariant(this, '{canonical.replace("'", "\\'")}', '{v.replace("'", "\\'")}')">
+                  </button>
+                </span>'''
+            for v in variants
+        )
+        group_cards += f"""
+        <div class="card mb-2 group-card" data-canonical="{canonical}">
+          <div class="card-body py-2">
+            <div class="d-flex align-items-start gap-2">
+              <div class="flex-grow-1">
+                <strong class="text-warning">{canonical}</strong>
+                <div class="mt-1">{chips}</div>
+              </div>
+            </div>
+          </div>
+        </div>"""
 
+    merged_section = ""
+    if merged:
+        merged_section = f"""
+        <div class="card mb-4">
+          <div class="card-header fw-semibold">
+            <i class="bi bi-people me-1 text-warning"></i>
+            Clientes unificados — revisá y separé los que no corresponden
+            <span class="badge bg-warning text-dark ms-2">{len(merged)} grupos</span>
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-3">
+              Clickeá la ✕ de una variante para separarla como cliente independiente.
+            </p>
+            {group_cards}
+          </div>
+        </div>"""
+
+    to_skip  = [d for d in stats["detalles"] if d["accion"] == "omitido"]
     rows_skip = "".join(
         f"<tr><td>{r['caratula']}</td><td class='text-muted'>{r.get('razon','')}</td></tr>"
         for r in to_skip
     ) or '<tr><td colspan="2" class="text-muted text-center">Ninguno</td></tr>'
 
-    merged_html = ""
-    if merged:
-        merged_rows = "".join(
-            f"<tr><td><strong>{g['canonical']}</strong></td>"
-            f"<td class='text-muted small'>{', '.join(g['variants'])}</td></tr>"
-            for g in merged
-        )
-        merged_html = f"""
-        <div class="card mb-3">
-          <div class="card-header fw-semibold text-warning">
-            <i class="bi bi-people me-1"></i>Clientes unificados automáticamente ({len(merged)})
-          </div>
-          <table class="table table-sm mb-0">
-            <thead class="table-light"><tr><th>Nombre canónico</th><th>Variantes detectadas</th></tr></thead>
-            <tbody>{merged_rows}</tbody>
-          </table>
-        </div>"""
+    client_map_json = _json.dumps(client_map, ensure_ascii=False)
 
-    n_new = stats['casos_nuevos']
     body = f"""
-    <div class="row g-3 mb-3">
+    <div class="row g-3 mb-4">
       <div class="col-md-3"><div class="card p-3 text-center">
         <div class="fs-3 fw-bold text-primary">{stats['total_filas']}</div>
         <div class="text-muted">Filas en sheet</div>
@@ -843,49 +865,59 @@ def import_preview(user=Depends(require_auth)):
       </div></div>
     </div>
 
-    {merged_html}
+    {merged_section}
 
-    <div class="card mb-3">
-      <div class="card-header fw-semibold text-success">
-        <i class="bi bi-check-circle me-1"></i>Se van a importar ({n_new})
+    <div class="card mb-4">
+      <div class="card-header fw-semibold text-secondary">
+        <i class="bi bi-skip-forward me-1"></i>Omitidos — ya existen en la DB ({stats['casos_existentes'] + stats['omitidos']})
       </div>
-      <div style="max-height:400px;overflow-y:auto">
+      <div style="max-height:200px;overflow-y:auto">
         <table class="table table-sm mb-0">
-          <thead class="table-light"><tr><th>Carátula</th><th>Cliente</th><th>Juzgado</th></tr></thead>
-          <tbody>{rows_new}</tbody>
+          <thead class="table-light"><tr><th>Carátula</th><th>Razón</th></tr></thead>
+          <tbody>{rows_skip}</tbody>
         </table>
       </div>
     </div>
 
-    <div class="card mb-4">
-      <div class="card-header fw-semibold text-secondary">
-        <i class="bi bi-skip-forward me-1"></i>Se van a omitir ({stats['casos_existentes'] + stats['omitidos']})
-      </div>
-      <table class="table table-sm mb-0">
-        <thead class="table-light"><tr><th>Carátula</th><th>Razón</th></tr></thead>
-        <tbody>{rows_skip}</tbody>
-      </table>
-    </div>
-
-    <form method="post" action="/admin/import/run">
-      <button class="btn btn-success btn-lg" type="submit">
+    <form method="post" action="/admin/import/run" id="importForm">
+      <input type="hidden" name="client_map" id="clientMapInput" value="">
+      <button class="btn btn-success btn-lg" type="submit" onclick="prepareSubmit()">
         <i class="bi bi-cloud-download me-2"></i>Importar {n_new} casos
       </button>
       <a href="/admin/import" class="btn btn-outline-secondary ms-2">Cancelar</a>
-    </form>"""
+    </form>
+
+    <script>
+    // client_map mutable en JS
+    let clientMap = {client_map_json};
+
+    function separateVariant(btn, canonical, variant) {{
+      // Sacar del grupo: la variante queda como su propio nombre
+      clientMap[variant] = variant;
+      // Remover el chip del DOM
+      btn.closest('.variant-chip').remove();
+    }}
+
+    function prepareSubmit() {{
+      document.getElementById('clientMapInput').value = JSON.stringify(clientMap);
+    }}
+    </script>"""
 
     return _page("Previsualización", body, "Importar")
 
 
 @router.post("/import/run", response_class=HTMLResponse)
-def import_run(user=Depends(require_auth)):
+def import_run(client_map: str = Form(""), user=Depends(require_auth)):
+    import traceback
     try:
-        stats = run_import(dry_run=False)
+        map_override = _json.loads(client_map) if client_map else None
+        stats = run_import(dry_run=False, client_map_override=map_override)
     except Exception as e:
-        return _page("Error", f'<div class="alert alert-danger">{e}</div>')
+        detail = traceback.format_exc()
+        return _page("Error", f'<div class="alert alert-danger"><strong>{type(e).__name__}: {e}</strong><pre class="mt-2 small">{detail}</pre></div>')
 
     if "error" in stats:
-        return _page("Error", f'<div class="alert alert-danger">{stats["error"]}</div>')
+        return _page("Error", f'<div class="alert alert-danger"><pre class="mb-0" style="white-space:pre-wrap">{stats["error"]}</pre></div>')
 
     body = f"""
     <div class="alert alert-success fs-5">
