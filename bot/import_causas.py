@@ -3,6 +3,7 @@ Importación del sheet "GENERAL DE CAUSAS" a la base de datos.
 Columnas del sheet: caratula | expte | cliente | nro | juzgado | mediacion | observaciones
 """
 
+import json
 import logging
 import os
 import unicodedata
@@ -16,6 +17,25 @@ logger = logging.getLogger("import_causas")
 
 SHEET_ID = os.getenv("CAUSAS_SHEET_ID", "1LmF0vYJXPmUJ3mpIk4AUQGgc3bBWI8meAa-4e_e5uSA")
 SHEET_RANGE = os.getenv("CAUSAS_SHEET_RANGE", "A:G")
+
+# Aliases: canonical name → list of substrings to match (case-insensitive)
+_ALIASES_PATH = os.path.join(os.path.dirname(__file__), "client_aliases.json")
+
+def _load_aliases() -> dict[str, list[str]]:
+    try:
+        with open(_ALIASES_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _resolve_client(name: str, aliases: dict[str, list[str]]) -> str:
+    """Devuelve el nombre canónico si hay un alias que coincide, o el nombre original."""
+    name_norm = _normalize(name)
+    for canonical, patterns in aliases.items():
+        for pattern in patterns:
+            if _normalize(pattern) in name_norm or name_norm in _normalize(pattern):
+                return canonical
+    return name
 
 # Mapeo de encabezados del sheet a campos internos
 HEADER_MAP = {
@@ -116,6 +136,9 @@ def run_import(dry_run: bool = False) -> dict:
         import traceback
         return {"error": f"{type(e).__name__}: {e}\n{traceback.format_exc()}", "clientes_nuevos": 0, "casos_nuevos": 0, "omitidos": 0}
 
+    aliases = _load_aliases()
+    logger.info("Aliases cargados: %d grupos canónicos", len(aliases))
+
     stats = {
         "total_filas": len(records),
         "clientes_nuevos": 0,
@@ -134,7 +157,7 @@ def run_import(dry_run: bool = False) -> dict:
                 continue
 
             numero    = rec.get("numero", "").strip() or None
-            cliente_n = rec.get("cliente", "").strip()
+            cliente_n = _resolve_client(rec.get("cliente", "").strip(), aliases)
             juzgado   = rec.get("juzgado", "").strip() or None
             mediacion = _parse_bool(rec.get("mediacion", ""))
             notas_parts = []
