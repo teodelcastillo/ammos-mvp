@@ -10,6 +10,19 @@ from contextlib import contextmanager
 DB_PATH = os.getenv("DB_PATH", "/app/data/estudio.db")
 
 
+def _migrate(conn):
+    """Agrega columnas nuevas a tablas existentes sin romper datos."""
+    migrations = [
+        "ALTER TABLE casos ADD COLUMN mediacion BOOLEAN DEFAULT 0",
+        "ALTER TABLE casos ADD COLUMN drive_folder_url TEXT",
+    ]
+    for sql in migrations:
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass  # columna ya existe
+
+
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     with get_conn() as conn:
@@ -36,6 +49,8 @@ def init_db():
                 estado              TEXT DEFAULT 'activo',
                 fecha_inicio        DATE,
                 abogado             TEXT,
+                mediacion           BOOLEAN DEFAULT 0,
+                drive_folder_url    TEXT,
                 notas               TEXT,
                 creado_en           DATETIME DEFAULT CURRENT_TIMESTAMP
             );
@@ -61,6 +76,7 @@ def init_db():
                 creado_en     DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         """)
+        _migrate(conn)
 
 
 @contextmanager

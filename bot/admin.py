@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from db import get_conn, rows_to_list, row_to_dict
+from import_causas import run_import
 
 router = APIRouter(prefix="/admin")
 security = HTTPBasic()
@@ -73,6 +74,8 @@ def _page(title: str, body: str, breadcrumb: str = "") -> HTMLResponse:
       <a href="/admin/casos" class="nav-link"><i class="bi bi-folder2-open me-2"></i>Casos</a>
       <a href="/admin/tiempo" class="nav-link"><i class="bi bi-clock-history me-2"></i>Tiempo</a>
       <a href="/admin/notas" class="nav-link"><i class="bi bi-journal-text me-2"></i>Notas</a>
+      <hr style="border-color:#2d4a8a;margin:8px">
+      <a href="/admin/import" class="nav-link"><i class="bi bi-cloud-download me-2"></i>Importar</a>
     </nav>
   </div>
 
@@ -746,3 +749,120 @@ def _form_nota(n: dict = None, casos: list = None, clientes: list = None) -> str
         </div>
       </form>
     </div></div>"""
+
+
+# ──────────────────────────────────────────────
+# IMPORTAR CAUSAS
+# ──────────────────────────────────────────────
+
+@router.get("/import", response_class=HTMLResponse)
+def import_page(user=Depends(require_auth)):
+    body = """
+    <div class="card mb-4">
+      <div class="card-body">
+        <p class="mb-1">Lee el sheet <strong>GENERAL DE CAUSAS</strong> y muestra una previsualización antes de importar.</p>
+        <p class="text-muted small mb-3">Los casos que ya existen en la DB (por carátula) serán omitidos. Los clientes se crean si no existen.</p>
+        <form method="post" action="/admin/import/preview">
+          <button class="btn btn-outline-primary" type="submit">
+            <i class="bi bi-eye me-1"></i>Previsualizar importación
+          </button>
+        </form>
+      </div>
+    </div>"""
+    return _page("Importar causas", body)
+
+
+@router.post("/import/preview", response_class=HTMLResponse)
+def import_preview(user=Depends(require_auth)):
+    try:
+        stats = run_import(dry_run=True)
+    except Exception as e:
+        return _page("Error", f'<div class="alert alert-danger">{e}</div>')
+
+    if "error" in stats:
+        return _page("Error", f'<div class="alert alert-danger">{stats["error"]}</div>')
+
+    to_import = [d for d in stats["detalles"] if d["accion"] == "importar"]
+    to_skip   = [d for d in stats["detalles"] if d["accion"] == "omitido"]
+
+    rows_new = "".join(
+        f"<tr><td>{r['caratula']}</td><td>{r.get('cliente','—')}</td><td>{r.get('juzgado','—')}</td></tr>"
+        for r in to_import
+    ) or '<tr><td colspan="3" class="text-muted text-center">Sin casos nuevos</td></tr>'
+
+    rows_skip = "".join(
+        f"<tr><td>{r['caratula']}</td><td class='text-muted'>{r.get('razon','')}</td></tr>"
+        for r in to_skip
+    ) or '<tr><td colspan="2" class="text-muted text-center">Ninguno</td></tr>'
+
+    body = f"""
+    <div class="row g-3 mb-3">
+      <div class="col-md-3"><div class="card p-3 text-center">
+        <div class="fs-3 fw-bold text-primary">{stats['total_filas']}</div>
+        <div class="text-muted">Filas en sheet</div>
+      </div></div>
+      <div class="col-md-3"><div class="card p-3 text-center">
+        <div class="fs-3 fw-bold text-success">{stats['casos_nuevos']}</div>
+        <div class="text-muted">Casos a importar</div>
+      </div></div>
+      <div class="col-md-3"><div class="card p-3 text-center">
+        <div class="fs-3 fw-bold text-info">{stats['clientes_nuevos']}</div>
+        <div class="text-muted">Clientes nuevos</div>
+      </div></div>
+      <div class="col-md-3"><div class="card p-3 text-center">
+        <div class="fs-3 fw-bold text-secondary">{stats['casos_existentes'] + stats['omitidos']}</div>
+        <div class="text-muted">Omitidos</div>
+      </div></div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-header fw-semibold text-success">
+        <i class="bi bi-check-circle me-1"></i>Se van a importar ({stats['casos_nuevos']})
+      </div>
+      <table class="table table-sm mb-0">
+        <thead class="table-light"><tr><th>Carátula</th><th>Cliente</th><th>Juzgado</th></tr></thead>
+        <tbody>{rows_new}</tbody>
+      </table>
+    </div>
+
+    <div class="card mb-4">
+      <div class="card-header fw-semibold text-secondary">
+        <i class="bi bi-skip-forward me-1"></i>Se van a omitir ({stats['casos_existentes'] + stats['omitidos']})
+      </div>
+      <table class="table table-sm mb-0">
+        <thead class="table-light"><tr><th>Carátula</th><th>Razón</th></tr></thead>
+        <tbody>{rows_skip}</tbody>
+      </table>
+    </div>
+
+    <form method="post" action="/admin/import/run">
+      <button class="btn btn-success btn-lg" type="submit"
+              onclick="return confirm('¿Confirmar importación de {stats[&quot;casos_nuevos&quot;]} casos?')">
+        <i class="bi bi-cloud-download me-2"></i>Importar {stats['casos_nuevos']} casos
+      </button>
+      <a href="/admin/import" class="btn btn-outline-secondary ms-2">Cancelar</a>
+    </form>"""
+
+    return _page("Previsualización", body, "Importar")
+
+
+@router.post("/import/run", response_class=HTMLResponse)
+def import_run(user=Depends(require_auth)):
+    try:
+        stats = run_import(dry_run=False)
+    except Exception as e:
+        return _page("Error", f'<div class="alert alert-danger">{e}</div>')
+
+    if "error" in stats:
+        return _page("Error", f'<div class="alert alert-danger">{stats["error"]}</div>')
+
+    body = f"""
+    <div class="alert alert-success fs-5">
+      <i class="bi bi-check-circle-fill me-2"></i>
+      Importación completada: <strong>{stats['casos_nuevos']} casos</strong>
+      y <strong>{stats['clientes_nuevos']} clientes</strong> nuevos.
+    </div>
+    <a href="/admin/casos" class="btn btn-primary">Ver casos</a>
+    <a href="/admin/clientes" class="btn btn-outline-secondary ms-2">Ver clientes</a>"""
+
+    return _page("Importación completada", body)
