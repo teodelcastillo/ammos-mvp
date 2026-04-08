@@ -774,10 +774,12 @@ def import_page(user=Depends(require_auth)):
 
 @router.post("/import/preview", response_class=HTMLResponse)
 def import_preview(user=Depends(require_auth)):
+    import traceback
     try:
         stats = run_import(dry_run=True)
     except Exception as e:
-        return _page("Error", f'<div class="alert alert-danger">{e}</div>')
+        detail = traceback.format_exc()
+        return _page("Error", f'<div class="alert alert-danger"><strong>{type(e).__name__}: {e}</strong><pre class="mt-2 small">{detail}</pre></div>')
 
     if "error" in stats:
         return _page("Error", f'<div class="alert alert-danger">{stats["error"]}</div>')
