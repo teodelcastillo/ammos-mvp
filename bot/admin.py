@@ -76,7 +76,9 @@ def _page(title: str, body: str, breadcrumb: str = "") -> HTMLResponse:
       <a href="/admin/tiempo" class="nav-link"><i class="bi bi-clock-history me-2"></i>Tiempo</a>
       <a href="/admin/notas" class="nav-link"><i class="bi bi-journal-text me-2"></i>Notas</a>
       <hr style="border-color:#2d4a8a;margin:8px">
-      <a href="/admin/import" class="nav-link"><i class="bi bi-cloud-download me-2"></i>Importar</a>
+      <a href="/admin/solicitudes" class="nav-link"><i class="bi bi-inbox me-2"></i>Solicitudes</a>
+      <a href="/admin/import" class="nav-link"><i class="bi bi-cloud-download me-2"></i>Importar causas</a>
+      <a href="/admin/import-calendar" class="nav-link"><i class="bi bi-calendar2-plus me-2"></i>Importar calendario</a>
     </nav>
   </div>
 
@@ -120,6 +122,9 @@ def dashboard(user=Depends(require_auth)):
         n_casos = conn.execute("SELECT COUNT(*) FROM casos WHERE estado='activo'").fetchone()[0]
         n_horas = conn.execute("SELECT COALESCE(SUM(horas),0) FROM registros_tiempo").fetchone()[0]
         n_notas = conn.execute("SELECT COUNT(*) FROM notas_reunion").fetchone()[0]
+        n_solicitudes = conn.execute(
+            "SELECT COUNT(*) FROM solicitudes_baja WHERE estado='pendiente'"
+        ).fetchone()[0]
         casos_recientes = rows_to_list(
             conn.execute("""
                 SELECT c.id, c.caratula, c.estado, c.materia, cl.nombre AS cliente
@@ -158,7 +163,8 @@ def dashboard(user=Depends(require_auth)):
           <div class="text-muted">Notas de reunión</div>
         </div>
       </div>
-    </div>"""
+    </div>
+    { f'<div class="alert alert-warning d-flex align-items-center gap-2 mb-4"><i class="bi bi-inbox-fill fs-5"></i><div><strong>{n_solicitudes} solicitud(es) de baja pendiente(s)</strong> — <a href="/admin/solicitudes" class="alert-link">Revisar ahora</a></div></div>' if n_solicitudes else "" }"""
 
     rows_html = "".join(
         f"""<tr>
@@ -944,15 +950,18 @@ def import_preview(user=Depends(require_auth)):
     for g in merged:
         canonical = g["canonical"]
         variants  = g["variants"]
-        chips = "".join(
-            f'''<span class="badge bg-secondary me-1 mb-1 variant-chip" style="font-size:.85rem">
-                  {v}
-                  <button type="button" class="btn-close btn-close-white ms-1" style="font-size:.6rem"
-                          onclick="separateVariant(this, '{canonical.replace("'", "\\'")}', '{v.replace("'", "\\'")}')">
-                  </button>
-                </span>'''
-            for v in variants
-        )
+        safe_canonical = canonical.replace("'", "\\'")
+        chips_parts = []
+        for v in variants:
+            safe_v = v.replace("'", "\\'")
+            chips_parts.append(
+                f'<span class="badge bg-secondary me-1 mb-1 variant-chip" style="font-size:.85rem">'
+                f'{v}'
+                f'<button type="button" class="btn-close btn-close-white ms-1" style="font-size:.6rem"'
+                f" onclick=\"separateVariant(this, '{safe_canonical}', '{safe_v}')\">"
+                f'</button></span>'
+            )
+        chips = "".join(chips_parts)
         group_cards += f"""
         <div class="card mb-2 group-card" data-canonical="{canonical}">
           <div class="card-body py-2">
@@ -1073,4 +1082,355 @@ def import_run(client_map: str = Form(""), user=Depends(require_auth)):
     <a href="/admin/casos" class="btn btn-primary">Ver casos</a>
     <a href="/admin/clientes" class="btn btn-outline-secondary ms-2">Ver clientes</a>"""
 
+    return _page("Importación completada", body)
+
+
+# ──────────────────────────────────────────────
+# SOLICITUDES DE BAJA
+# ──────────────────────────────────────────────
+
+@router.get("/solicitudes", response_class=HTMLResponse)
+def solicitudes_list(user=Depends(require_auth)):
+    with get_conn() as conn:
+        rows = rows_to_list(conn.execute(
+            "SELECT * FROM solicitudes_baja ORDER BY estado='pendiente' DESC, creado_en DESC"
+        ).fetchall())
+
+    estado_badge = {
+        "pendiente": '<span class="badge bg-warning text-dark">pendiente</span>',
+        "aprobado": '<span class="badge bg-success">aprobado</span>',
+        "rechazado": '<span class="badge bg-danger">rechazado</span>',
+    }
+    rows_html = "".join(
+        f"""<tr>
+          <td>{r['creado_en'][:10]}</td>
+          <td><span class="badge bg-secondary">{r['tipo']}</span></td>
+          <td>{r['objeto_descripcion'] or r['objeto_id']}</td>
+          <td class="text-muted small">{r.get('solicitante') or '—'}</td>
+          <td class="text-muted small">{r.get('motivo') or '—'}</td>
+          <td>{estado_badge.get(r['estado'], r['estado'])}</td>
+          <td>
+            {"" if r['estado'] != 'pendiente' else f'''
+            <form method="post" action="/admin/solicitudes/{r['id']}/aprobar" class="d-inline">
+              <button class="btn btn-success btn-sm">Aprobar</button>
+            </form>
+            <form method="post" action="/admin/solicitudes/{r['id']}/rechazar" class="d-inline ms-1">
+              <button class="btn btn-outline-danger btn-sm">Rechazar</button>
+            </form>'''}
+          </td>
+        </tr>"""
+        for r in rows
+    )
+    body = f"""
+    <div class="card">
+      <table class="table table-hover mb-0">
+        <thead class="table-light">
+          <tr><th>Fecha</th><th>Tipo</th><th>Objeto</th><th>Solicitante</th><th>Motivo</th><th>Estado</th><th>Acción</th></tr>
+        </thead>
+        <tbody>
+          {rows_html or '<tr><td colspan="7" class="text-center text-muted py-3">Sin solicitudes</td></tr>'}
+        </tbody>
+      </table>
+    </div>"""
+    return _page("Solicitudes de baja", body)
+
+
+@router.post("/solicitudes/{sid}/aprobar")
+def solicitud_aprobar(sid: int, user=Depends(require_auth)):
+    """Aprueba la solicitud: elimina el objeto y marca la solicitud como aprobada."""
+    with get_conn() as conn:
+        sol = row_to_dict(conn.execute(
+            "SELECT * FROM solicitudes_baja WHERE id=?", (sid,)
+        ).fetchone())
+        if not sol or sol["estado"] != "pendiente":
+            raise HTTPException(404)
+
+        # Ejecutar la eliminación según el tipo
+        if sol["tipo"] == "caso":
+            conn.execute("DELETE FROM casos WHERE id=?", (sol["objeto_id"],))
+        elif sol["tipo"] == "cliente":
+            conn.execute("UPDATE casos SET cliente_id=NULL WHERE cliente_id=?", (sol["objeto_id"],))
+            conn.execute("DELETE FROM clientes WHERE id=?", (sol["objeto_id"],))
+        elif sol["tipo"] == "evento":
+            conn.execute("DELETE FROM eventos_caso WHERE id=?", (sol["objeto_id"],))
+
+        conn.execute(
+            "UPDATE solicitudes_baja SET estado='aprobado', resuelto_en=datetime('now'), resuelto_por=? WHERE id=?",
+            (user, sid)
+        )
+    return RedirectResponse("/admin/solicitudes", status_code=303)
+
+
+@router.post("/solicitudes/{sid}/rechazar")
+def solicitud_rechazar(sid: int, user=Depends(require_auth)):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE solicitudes_baja SET estado='rechazado', resuelto_en=datetime('now'), resuelto_por=? WHERE id=?",
+            (user, sid)
+        )
+    return RedirectResponse("/admin/solicitudes", status_code=303)
+
+
+# ──────────────────────────────────────────────
+# IMPORTAR DESDE CALENDARIO
+# ──────────────────────────────────────────────
+
+def _infer_tipo(titulo: str) -> str:
+    t = titulo.lower()
+    if any(w in t for w in ["audiencia", "vista", "oral"]):
+        return "audiencia"
+    if any(w in t for w in ["mediación", "mediacion"]):
+        return "mediacion"
+    if any(w in t for w in ["pericia", "perito", "peritos"]):
+        return "pericia"
+    if any(w in t for w in ["reunión", "reunion", "entrevista"]):
+        return "reunion"
+    if any(w in t for w in ["vencimiento", "plazo", "término", "termino"]):
+        return "vencimiento"
+    return "otro"
+
+
+def _score_event_case(event_summary: str, caratula: str) -> int:
+    """Puntaje de coincidencia entre título de evento y carátula de caso."""
+    summary_lower = event_summary.lower()
+    caratula_lower = caratula.lower()
+    # Palabras significativas (> 3 chars, no stop words)
+    stop = {"del", "los", "las", "con", "para", "por", "una", "uno", "que", "como"}
+    words = [w for w in caratula_lower.split() if len(w) > 3 and w not in stop]
+    return sum(1 for w in words if w in summary_lower)
+
+
+@router.get("/import-calendar", response_class=HTMLResponse)
+def import_calendar_get(user=Depends(require_auth)):
+    body = """
+    <div class="card mb-4">
+      <div class="card-body">
+        <p>Lee todos los eventos del calendario entre <strong>enero 2025</strong> y <strong>hoy</strong>
+           e intenta asociarlos a causas existentes en la base de datos.</p>
+        <p class="text-muted small mb-3">
+          Podés ajustar la causa asignada en la previsualización antes de confirmar.
+          Los eventos ya registrados (mismo ID de calendario) serán omitidos automáticamente.
+        </p>
+        <form method="post" action="/admin/import-calendar/preview">
+          <button class="btn btn-outline-primary" type="submit">
+            <i class="bi bi-eye me-1"></i>Cargar eventos del calendario
+          </button>
+        </form>
+      </div>
+    </div>"""
+    return _page("Importar desde Calendario", body)
+
+
+@router.post("/import-calendar/preview", response_class=HTMLResponse)
+def import_calendar_preview(user=Depends(require_auth)):
+    import traceback
+    from datetime import datetime, timezone
+    from googleapiclient.discovery import build
+    from google_auth import get_credentials
+    import os, base64
+
+    try:
+        creds = get_credentials()
+        service = build("calendar", "v3", credentials=creds)
+
+        raw_cal = os.getenv("CALENDAR_ID", "primary")
+        if raw_cal and "@" not in raw_cal:
+            try:
+                padded = raw_cal + "=" * (4 - len(raw_cal) % 4)
+                decoded = base64.b64decode(padded).decode()
+                if "@" in decoded:
+                    raw_cal = decoded
+            except Exception:
+                pass
+        calendar_id = raw_cal
+
+        time_min = "2025-01-01T00:00:00Z"
+        time_max = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        events = []
+        page_token = None
+        while True:
+            resp = service.events().list(
+                calendarId=calendar_id,
+                timeMin=time_min,
+                timeMax=time_max,
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=500,
+                pageToken=page_token,
+            ).execute()
+            events.extend(resp.get("items", []))
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                break
+
+    except Exception as e:
+        detail = traceback.format_exc()
+        return _page("Error", f'<div class="alert alert-danger"><strong>{type(e).__name__}: {e}</strong><pre class="mt-2 small">{detail}</pre></div>')
+
+    with get_conn() as conn:
+        casos = rows_to_list(conn.execute(
+            "SELECT id, caratula FROM casos ORDER BY caratula"
+        ).fetchall())
+        existing_ids = {
+            r[0] for r in conn.execute("SELECT calendar_event_id FROM eventos_caso WHERE calendar_event_id IS NOT NULL").fetchall()
+        }
+
+    # Construir opciones de casos para el select
+    casos_opts = '<option value="">— Sin asignar —</option>' + "".join(
+        f'<option value="{c["id"]}">{c["caratula"]}</option>' for c in casos
+    )
+
+    rows_html = ""
+    n_total = 0
+    n_skip = 0
+    for ev in events:
+        ev_id = ev.get("id", "")
+        titulo = ev.get("summary", "(sin título)")
+        start = ev.get("start", {})
+        fecha = start.get("dateTime") or start.get("date") or ""
+        fecha_short = fecha[:10]
+        cal_link = ev.get("htmlLink", "")
+        tipo_sugerido = _infer_tipo(titulo)
+
+        if ev_id in existing_ids:
+            n_skip += 1
+            continue
+
+        # Buscar mejor caso sugerido
+        best_caso_id = ""
+        best_score = 0
+        for c in casos:
+            s = _score_event_case(titulo, c["caratula"])
+            if s > best_score:
+                best_score = s
+                best_caso_id = str(c["id"])
+
+        # Build select with pre-selected best match
+        sel_opts = '<option value="">— Sin asignar —</option>' + "".join(
+            f'<option value="{c["id"]}" {"selected" if str(c["id"]) == best_caso_id and best_score > 0 else ""}>{c["caratula"]}</option>'
+            for c in casos
+        )
+        score_badge = f'<span class="badge bg-success ms-1" title="coincidencia automática">{best_score}✓</span>' if best_score > 0 else '<span class="badge bg-light text-muted ms-1">sin match</span>'
+
+        rows_html += f"""
+        <tr>
+          <td><input type="checkbox" name="incluir" value="{ev_id}" class="form-check-input" {"checked" if best_score > 0 else ""}></td>
+          <td class="small">{fecha_short}</td>
+          <td>
+            {titulo} {score_badge}
+            {"" if not cal_link else f'<a href="{cal_link}" target="_blank" class="ms-1 text-muted"><i class="bi bi-box-arrow-up-right"></i></a>'}
+            <input type="hidden" name="ev_id" value="{ev_id}">
+            <input type="hidden" name="ev_titulo" value="{titulo.replace(chr(34), '&quot;')}">
+            <input type="hidden" name="ev_fecha" value="{fecha}">
+            <input type="hidden" name="ev_link" value="{cal_link}">
+          </td>
+          <td>
+            <select name="caso_{ev_id}" class="form-select form-select-sm">{sel_opts}</select>
+          </td>
+          <td>
+            <select name="tipo_{ev_id}" class="form-select form-select-sm">
+              {"".join(f'<option value="{t}" {"selected" if t == tipo_sugerido else ""}>{t}</option>' for t in ["audiencia","vencimiento","reunion","pericia","mediacion","otro"])}
+            </select>
+          </td>
+        </tr>"""
+        n_total += 1
+
+    body = f"""
+    <div class="row g-3 mb-4">
+      <div class="col-md-3"><div class="card p-3 text-center">
+        <div class="fs-3 fw-bold text-primary">{len(events)}</div>
+        <div class="text-muted">Eventos en calendario</div>
+      </div></div>
+      <div class="col-md-3"><div class="card p-3 text-center">
+        <div class="fs-3 fw-bold text-secondary">{n_skip}</div>
+        <div class="text-muted">Ya registrados</div>
+      </div></div>
+      <div class="col-md-3"><div class="card p-3 text-center">
+        <div class="fs-3 fw-bold text-success">{n_total}</div>
+        <div class="text-muted">Para importar</div>
+      </div></div>
+    </div>
+
+    <form method="post" action="/admin/import-calendar/run">
+      <div class="card mb-4">
+        <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+          <span>Eventos nuevos — revisá y ajustá antes de confirmar</span>
+          <div>
+            <button type="button" class="btn btn-outline-secondary btn-sm me-1" onclick="toggleAll(true)">Marcar todos</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="toggleAll(false)">Desmarcar todos</button>
+          </div>
+        </div>
+        <div style="max-height:60vh;overflow-y:auto">
+          <table class="table table-hover table-sm mb-0">
+            <thead class="table-light sticky-top">
+              <tr><th style="width:30px"></th><th style="width:90px">Fecha</th><th>Título</th><th style="width:260px">Causa</th><th style="width:120px">Tipo</th></tr>
+            </thead>
+            <tbody>
+              {rows_html or '<tr><td colspan="5" class="text-center text-muted py-3">Sin eventos nuevos para importar</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <button class="btn btn-success btn-lg" type="submit">
+        <i class="bi bi-calendar-check me-2"></i>Registrar eventos seleccionados
+      </button>
+      <a href="/admin/import-calendar" class="btn btn-outline-secondary ms-2">Cancelar</a>
+    </form>
+    <script>
+    function toggleAll(val) {{
+      document.querySelectorAll('input[name="incluir"]').forEach(cb => cb.checked = val);
+    }}
+    </script>"""
+    return _page("Previsualización calendario", body, "Importar calendario")
+
+
+@router.post("/import-calendar/run", response_class=HTMLResponse)
+async def import_calendar_run(request: Request, user=Depends(require_auth)):
+    form = await request.form()
+    incluidos = set(form.getlist("incluir"))
+    ev_ids = form.getlist("ev_id")
+    ev_titulos = form.getlist("ev_titulo")
+    ev_fechas = form.getlist("ev_fecha")
+    ev_links = form.getlist("ev_link")
+
+    inserted = 0
+    skipped = 0
+    with get_conn() as conn:
+        for i, ev_id in enumerate(ev_ids):
+            if ev_id not in incluidos:
+                skipped += 1
+                continue
+            titulo = ev_titulos[i] if i < len(ev_titulos) else ""
+            fecha = ev_fechas[i] if i < len(ev_fechas) else ""
+            link = ev_links[i] if i < len(ev_links) else ""
+            caso_id_raw = form.get(f"caso_{ev_id}", "")
+            tipo = form.get(f"tipo_{ev_id}", "otro")
+            caso_id = int(caso_id_raw) if caso_id_raw else None
+
+            # Skip si ya existe
+            exists = conn.execute(
+                "SELECT 1 FROM eventos_caso WHERE calendar_event_id=?", (ev_id,)
+            ).fetchone()
+            if exists:
+                skipped += 1
+                continue
+
+            conn.execute(
+                """INSERT INTO eventos_caso
+                   (caso_id, calendar_event_id, calendar_link, titulo, fecha, tipo)
+                   VALUES (?,?,?,?,?,?)""",
+                (caso_id, ev_id, link, titulo, fecha, tipo)
+            )
+            inserted += 1
+
+    body = f"""
+    <div class="alert alert-success fs-5">
+      <i class="bi bi-check-circle-fill me-2"></i>
+      <strong>{inserted} eventos</strong> registrados correctamente.
+      {f"({skipped} omitidos)" if skipped else ""}
+    </div>
+    <p class="text-muted">Los eventos sin causa asignada quedan registrados igual — podés vincularlos luego desde el detalle de cada causa.</p>
+    <a href="/admin/casos" class="btn btn-primary">Ver causas</a>
+    <a href="/admin/import-calendar" class="btn btn-outline-secondary ms-2">Importar más</a>"""
     return _page("Importación completada", body)

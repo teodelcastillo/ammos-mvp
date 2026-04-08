@@ -26,6 +26,18 @@ def _migrate(conn):
             notas             TEXT,
             creado_en         DATETIME DEFAULT CURRENT_TIMESTAMP
         )""",
+        """CREATE TABLE IF NOT EXISTS solicitudes_baja (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo                TEXT NOT NULL,
+            objeto_id           INTEGER NOT NULL,
+            objeto_descripcion  TEXT,
+            solicitante         TEXT,
+            motivo              TEXT,
+            estado              TEXT DEFAULT 'pendiente',
+            creado_en           DATETIME DEFAULT CURRENT_TIMESTAMP,
+            resuelto_en         DATETIME,
+            resuelto_por        TEXT
+        )""",
     ]
     for sql in migrations:
         try:

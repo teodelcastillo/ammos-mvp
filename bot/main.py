@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, Header, HTTPException
 
 from agent import process_message
 from admin import router as admin_router
+from lawyer import router as lawyer_router
 from briefing import send_briefing
 from db import init_db
 
@@ -29,6 +30,7 @@ scheduler = AsyncIOScheduler(timezone="America/Argentina/Cordoba")
 
 app = FastAPI(title="Del Castillo Bot")
 app.include_router(admin_router)
+app.include_router(lawyer_router)
 
 @app.on_event("startup")
 async def startup():
