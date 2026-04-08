@@ -15,6 +15,17 @@ def _migrate(conn):
     migrations = [
         "ALTER TABLE casos ADD COLUMN mediacion BOOLEAN DEFAULT 0",
         "ALTER TABLE casos ADD COLUMN drive_folder_url TEXT",
+        """CREATE TABLE IF NOT EXISTS eventos_caso (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            caso_id           INTEGER REFERENCES casos(id) ON DELETE CASCADE,
+            calendar_event_id TEXT,
+            calendar_link     TEXT,
+            titulo            TEXT NOT NULL,
+            fecha             DATETIME NOT NULL,
+            tipo              TEXT DEFAULT 'otro',
+            notas             TEXT,
+            creado_en         DATETIME DEFAULT CURRENT_TIMESTAMP
+        )""",
     ]
     for sql in migrations:
         try:
@@ -74,6 +85,18 @@ def init_db():
                 contenido     TEXT NOT NULL,
                 creado_por    TEXT,
                 creado_en     DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS eventos_caso (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                caso_id           INTEGER REFERENCES casos(id) ON DELETE CASCADE,
+                calendar_event_id TEXT,
+                calendar_link     TEXT,
+                titulo            TEXT NOT NULL,
+                fecha             DATETIME NOT NULL,
+                tipo              TEXT DEFAULT 'otro',
+                notas             TEXT,
+                creado_en         DATETIME DEFAULT CURRENT_TIMESTAMP
             );
         """)
         _migrate(conn)

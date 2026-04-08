@@ -66,6 +66,7 @@ def _get_events(time_min: str, time_max: str) -> list[dict]:
                 events.append({
                     "summary": e.get("summary", "Sin título"),
                     "start": e["start"].get("dateTime", e["start"].get("date")),
+                    "event_id": e.get("id", ""),
                 })
         except Exception:
             continue
@@ -76,6 +77,17 @@ def _get_events(time_min: str, time_max: str) -> list[dict]:
 def _get_active_casos() -> int:
     with get_conn() as conn:
         return conn.execute("SELECT COUNT(*) FROM casos WHERE estado='activo'").fetchone()[0]
+
+
+def _build_event_case_index() -> dict[str, str]:
+    """Construye un índice {calendar_event_id → caratula} desde eventos_caso."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT ev.calendar_event_id, c.caratula
+               FROM eventos_caso ev JOIN casos c ON c.id=ev.caso_id
+               WHERE ev.calendar_event_id IS NOT NULL"""
+        ).fetchall()
+    return {r[0]: r[1] for r in rows}
 
 
 def _build_message() -> str:
@@ -90,22 +102,30 @@ def _build_message() -> str:
     days_to_sunday = 6 - now.weekday()
     week_end    = (today_start + timedelta(days=days_to_sunday)).replace(hour=23, minute=59, second=59)
 
-    today_events = _get_events(today_start.isoformat(), today_end.isoformat())
-    week_events  = _get_events(week_start.isoformat(), week_end.isoformat()) if days_to_sunday > 0 else []
+    today_events  = _get_events(today_start.isoformat(), today_end.isoformat())
+    week_events   = _get_events(week_start.isoformat(), week_end.isoformat()) if days_to_sunday > 0 else []
     casos_activos = _get_active_casos()
+    event_case_idx = _build_event_case_index()
 
     dia_nombre = DIAS_ES[now.weekday()]
     fecha_str  = f"{now.day:02d}/{now.month:02d}/{now.year}"
 
     lines = [f"*Buenos días! ☀️ {dia_nombre} {fecha_str}*\n"]
 
+    def _fmt_event_line(e: dict, show_date: bool = False) -> str:
+        hora = _fmt_time(e["start"])
+        caso = event_case_idx.get(e.get("event_id", ""))
+        caso_tag = f" _(caso: {caso})_" if caso else ""
+        prefix = f"• {_fmt_date_short(e['start'])} {hora} — " if show_date else (
+            f"• {hora} — " if hora != "todo el día" else "• "
+        )
+        return f"{prefix}{e['summary']}{caso_tag}"
+
     # Eventos de hoy
     lines.append("*📅 Hoy:*")
     if today_events:
         for e in today_events:
-            hora = _fmt_time(e["start"])
-            prefix = f"• {hora} — " if hora != "todo el día" else "• "
-            lines.append(f"{prefix}{e['summary']}")
+            lines.append(_fmt_event_line(e))
     else:
         lines.append("• Sin eventos")
 
@@ -114,10 +134,7 @@ def _build_message() -> str:
         lines.append("\n*📆 Resto de la semana:*")
         if week_events:
             for e in week_events:
-                fecha_corta = _fmt_date_short(e["start"])
-                hora = _fmt_time(e["start"])
-                suffix = f" ({hora})" if hora != "todo el día" else ""
-                lines.append(f"• {fecha_corta}{suffix} — {e['summary']}")
+                lines.append(_fmt_event_line(e, show_date=True))
         else:
             lines.append("• Sin eventos")
 

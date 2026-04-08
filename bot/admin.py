@@ -469,6 +469,11 @@ def casos_nuevo(user=Depends(require_auth)):
     return _page("Nuevo caso", _form_caso(), "Nuevo")
 
 
+TIPO_ICONS = {
+    "audiencia": "⚖️", "vencimiento": "⏰", "reunion": "🤝",
+    "pericia": "🔬", "mediacion": "🕊️", "otro": "📌",
+}
+
 @router.get("/casos/{cid}", response_class=HTMLResponse)
 def casos_ver(cid: int, user=Depends(require_auth)):
     with get_conn() as conn:
@@ -479,8 +484,31 @@ def casos_ver(cid: int, user=Depends(require_auth)):
         notas = rows_to_list(conn.execute(
             "SELECT * FROM notas_reunion WHERE caso_id=? ORDER BY fecha DESC", (cid,)
         ).fetchall())
+        eventos = rows_to_list(conn.execute(
+            "SELECT * FROM eventos_caso WHERE caso_id=? ORDER BY fecha DESC", (cid,)
+        ).fetchall())
     if not c:
         raise HTTPException(404)
+
+    # Eventos / historial
+    ev_html = ""
+    for e in eventos:
+        icon = TIPO_ICONS.get(e.get("tipo", "otro"), "📌")
+        link = f'<a href="{e["calendar_link"]}" target="_blank" class="btn btn-sm btn-outline-primary py-0 ms-1"><i class="bi bi-calendar-check"></i></a>' if e.get("calendar_link") else ""
+        nota = f'<div class="text-muted small">{e["notas"]}</div>' if e.get("notas") else ""
+        ev_html += f"""
+        <div class="d-flex gap-2 py-2 border-bottom">
+          <div class="text-center" style="min-width:36px;font-size:1.2rem">{icon}</div>
+          <div class="flex-grow-1">
+            <div class="d-flex align-items-center">
+              <span class="fw-semibold">{e['titulo']}</span>{link}
+              <span class="badge bg-light text-dark border ms-2 small">{e.get('tipo','otro')}</span>
+            </div>
+            <div class="text-muted small">{e['fecha'][:16].replace('T',' ')}</div>
+            {nota}
+          </div>
+        </div>"""
+    ev_section = ev_html or '<div class="text-muted small p-3">Sin eventos registrados. Podés pedirle a Lexia que registre audiencias o vencimientos.</div>'
 
     t_html = "".join(
         f"<tr><td>{t['fecha']}</td><td>{t['abogado']}</td><td>{t['horas']}h</td><td>{t.get('descripcion') or '—'}</td></tr>"
@@ -495,6 +523,13 @@ def casos_ver(cid: int, user=Depends(require_auth)):
 
     horas_total = sum(t["horas"] for t in tiempos)
     extra = f"""
+    <div class="card mt-4">
+      <div class="card-header fw-semibold d-flex justify-content-between align-items-center">
+        <span>📋 Historial de eventos <span class="badge bg-secondary ms-1">{len(eventos)}</span></span>
+        <small class="text-muted">Registrá eventos con Lexia por WhatsApp</small>
+      </div>
+      <div class="card-body p-0 px-3">{ev_section}</div>
+    </div>
     <div class="row g-3 mt-1">
       <div class="col-md-6">
         <div class="card">

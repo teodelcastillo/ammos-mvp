@@ -14,6 +14,7 @@ from tools.weather import weather_tools, handle_weather_tool
 from tools.casos import casos_tools, handle_casos_tool
 from tools.tiempo import tiempo_tools, handle_tiempo_tool
 from tools.notas import notas_tools, handle_notas_tool
+from tools.eventos import eventos_tools, handle_eventos_tool
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ SYSTEM_PROMPT = """Sos un asistente virtual para el estudio jurídico Del Castil
 Tu rol es ayudar al equipo del estudio con:
 - *Calendario*: vencimientos, reuniones, audiencias, plazos del calendario "Estudio del Castillo abogados"
 - *Casos*: crear, buscar y actualizar el estado de expedientes
+- *Historial de casos*: registrar y consultar audiencias, vencimientos y reuniones vinculadas a cada caso
 - *Tiempo*: registrar horas trabajadas por caso y abogado
 - *Notas*: guardar y buscar minutas de reuniones
 - *Drive*: buscar documentos en Google Drive
@@ -91,6 +93,9 @@ Reglas:
 - La duración por defecto de una reunión es 1 hora
 - Para casos, siempre confirmá antes de cambiar el estado a cerrado o archivado
 - Cuando registres tiempo, confirmá el registro con un resumen claro
+- Cuando agendés un evento relacionado a un caso (audiencia, vencimiento, reunión), usá siempre evento_registrar en vez de calendar_create_event, para que quede vinculado al caso
+- Cuando respondas sobre casos, mencioná el ID del caso entre paréntesis para facilitar referencias futuras
+- Cuando des el historial de un caso, incluí los links del calendario para cada evento
 
 Cuando alguien te pregunte qué podés hacer, ayuda, comandos, o similares, respondé EXACTAMENTE esto (sin agregar ni quitar nada):
 
@@ -119,6 +124,12 @@ Cuando alguien te pregunte qué podés hacer, ayuda, comandos, o similares, resp
 - Buscar nota [texto]
 - Notas del caso [id]
 
+*📋 Historial de casos*
+- Historial del caso [id o nombre]
+- Registrar audiencia del caso [id] el [fecha] a las [hora] en [juzgado]
+- Registrar vencimiento del caso [id] para el [fecha]
+- Eventos del caso [id]
+
 *📁 Drive*
 - Buscar documento [texto]
 - Listar carpeta [nombre]
@@ -127,7 +138,7 @@ Cuando alguien te pregunte qué podés hacer, ayuda, comandos, o similares, resp
 - Clima de hoy / mañana
 - Cualquier consulta general"""
 
-ALL_TOOLS = calendar_tools + drive_tools + weather_tools + casos_tools + tiempo_tools + notas_tools
+ALL_TOOLS = calendar_tools + drive_tools + weather_tools + casos_tools + tiempo_tools + notas_tools + eventos_tools
 
 # Simple conversation memory: last exchanges per chat
 _history: dict[str, list[dict]] = defaultdict(list)
@@ -237,4 +248,6 @@ async def _handle_tool(name: str, input_data: dict) -> dict:
         return await handle_tiempo_tool(name, input_data)
     elif name.startswith("notas_"):
         return await handle_notas_tool(name, input_data)
+    elif name in ("evento_registrar", "caso_historial", "evento_listar_caso"):
+        return await handle_eventos_tool(name, input_data)
     return {"error": f"Tool desconocido: {name}"}
