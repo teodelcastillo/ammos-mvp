@@ -1,10 +1,12 @@
 """
 Briefing diario automático para Estudio Del Castillo.
 Envía un resumen de eventos y casos activos cada mañana por WhatsApp.
+También envía un check-in vespertino a las 16hs con los eventos del día.
 """
 
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -25,6 +27,41 @@ BRIEFING_CHATS: list[str] = [j.strip() for j in _raw.split(",") if j.strip()]
 DIAS_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
 MESES_ES = ["", "ene", "feb", "mar", "abr", "may", "jun",
             "jul", "ago", "sep", "oct", "nov", "dic"]
+
+# ── Helpers compartidos para filtrar/clasificar eventos ──────────────────────
+
+_SKIP_KW = [
+    "home office", "vacaciones", "feriado", "feriados",
+    "cumpleaños", "birthday", "franco", "licencia", "día libre",
+]
+
+_TIPO_ICONS = {
+    "audiencia": "⚖️", "vencimiento": "⏰", "reunion": "🤝",
+    "pericia": "🔬", "mediacion": "🕊️", "otro": "📌",
+}
+
+
+def _infer_tipo(titulo: str) -> str:
+    t = titulo.lower()
+    if any(w in t for w in ["audiencia", "vista", "oral"]) or re.search(r"\baud[\s.\-]", t):
+        return "audiencia"
+    if any(w in t for w in ["vencimiento", "vence", "vto.", "vtto", "plazo", "término", "termino"]):
+        return "vencimiento"
+    if any(w in t for w in ["mediación", "mediacion"]):
+        return "mediacion"
+    if any(w in t for w in ["pericia", "perito", "peritos"]):
+        return "pericia"
+    if any(w in t for w in ["reunión", "reunion", "entrevista"]):
+        return "reunion"
+    return "otro"
+
+
+def _es_relevante(titulo: str) -> bool:
+    """True si el evento merece un check-in (no es HO/vacaciones y tiene tipo conocido)."""
+    t = titulo.lower()
+    if any(kw in t for kw in _SKIP_KW):
+        return False
+    return _infer_tipo(titulo) != "otro"
 
 
 def _fmt_time(dt_str: str) -> str:
@@ -144,6 +181,20 @@ def _build_message() -> str:
     return "\n".join(lines)
 
 
+async def _send_to_chats(message: str, label: str):
+    """Envía un mensaje a todos los BRIEFING_CHATS."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for jid in BRIEFING_CHATS:
+            try:
+                await client.post(
+                    f"{WA_BRIDGE_URL}/send",
+                    json={"chat": jid, "message": message},
+                )
+                logger.info("%s enviado a %s", label, jid)
+            except Exception:
+                logger.exception("Error enviando %s a %s", label, jid)
+
+
 async def send_briefing():
     """Genera y envía el briefing a todos los chats configurados."""
     if not BRIEFING_CHATS:
@@ -157,13 +208,74 @@ async def send_briefing():
         logger.exception("Error generando el briefing")
         return
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for jid in BRIEFING_CHATS:
-            try:
-                await client.post(
-                    f"{WA_BRIDGE_URL}/send",
-                    json={"chat": jid, "message": message},
-                )
-                logger.info("Briefing enviado a %s", jid)
-            except Exception:
-                logger.exception("Error enviando briefing a %s", jid)
+    await _send_to_chats(message, "Briefing")
+
+
+# ── Check-in vespertino (16hs) ───────────────────────────────────────────────
+
+def _build_checkin_message() -> str | None:
+    """
+    Construye el mensaje de check-in de las 16hs.
+    Retorna None si no hay eventos relevantes hoy → no se envía nada.
+    """
+    tz = ZoneInfo(TIMEZONE)
+    now = datetime.now(tz)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_end   = now.replace(hour=23, minute=59, second=59, microsecond=0)
+
+    try:
+        today_events = _get_events(today_start.isoformat(), today_end.isoformat())
+    except Exception:
+        logger.exception("Error obteniendo eventos para check-in")
+        return None
+
+    # Solo tipos relevantes
+    relevantes = [e for e in today_events if _es_relevante(e["summary"])]
+    if not relevantes:
+        logger.info("Sin eventos relevantes hoy — no se envía check-in")
+        return None
+
+    event_case_idx = _build_event_case_index()
+
+    dia = DIAS_ES[now.weekday()]
+    fecha_str = f"{now.day:02d}/{now.month:02d}/{now.year}"
+
+    lines = [f"*📋 Cierre del día — {dia} {fecha_str}*\n"]
+    lines.append("Estos eventos figuraban hoy en la agenda:\n")
+
+    for e in relevantes:
+        titulo  = e["summary"]
+        hora    = _fmt_time(e["start"])
+        tipo    = _infer_tipo(titulo)
+        icon    = _TIPO_ICONS[tipo]
+        caso    = event_case_idx.get(e.get("event_id", ""))
+        hora_str = f" — {hora}" if hora and hora != "todo el día" else ""
+
+        if caso:
+            lines.append(f"{icon} *{titulo}*{hora_str}")
+            lines.append(f"   _↳ causa: {caso}_")
+        else:
+            lines.append(f"{icon} *{titulo}*{hora_str}")
+
+    lines.append(
+        "\n¿Cómo resultó? Para registrarlo:\n"
+        "_\"lexia, anotar en [causa]: [resultado]\"_\n"
+        "_\"lexia, registrar [audiencia/reunión/...] en [causa] para el [fecha]\"_"
+    )
+
+    return "\n".join(lines)
+
+
+async def send_evening_checkin():
+    """Envía el check-in vespertino si hay eventos relevantes hoy."""
+    if not BRIEFING_CHATS:
+        return
+    logger.info("Generando check-in vespertino")
+    try:
+        message = _build_checkin_message()
+    except Exception:
+        logger.exception("Error generando check-in vespertino")
+        return
+
+    if message:
+        await _send_to_chats(message, "Check-in vespertino")

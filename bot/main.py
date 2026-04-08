@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, Header, HTTPException
 from agent import process_message
 from admin import router as admin_router
 from lawyer import router as lawyer_router
-from briefing import send_briefing
+from briefing import send_briefing, send_evening_checkin
 from db import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
@@ -21,9 +21,10 @@ BOT_TRIGGER = os.getenv("BOT_TRIGGER", "lexia").lower()
 _raw_allowed = os.getenv("ALLOWED_CHATS", "")
 ALLOWED_CHATS: set[str] = {j.strip() for j in _raw_allowed.split(",") if j.strip()}
 
-# Briefing: hora en formato "HH:MM" (zona America/Argentina/Cordoba)
+# Briefing matutino y check-in vespertino
 BRIEFING_TIME = os.getenv("BRIEFING_TIME", "08:00")
-# Token para disparar el briefing manualmente vía POST /trigger/briefing
+CHECKIN_TIME  = os.getenv("CHECKIN_TIME", "16:00")
+# Token para disparar manualmente vía POST /trigger/*
 BRIEFING_TOKEN = os.getenv("BRIEFING_TOKEN", "")
 
 scheduler = AsyncIOScheduler(timezone="America/Argentina/Cordoba")
@@ -37,10 +38,17 @@ async def startup():
     init_db()
     logger.info("Base de datos inicializada")
 
-    hour, minute = BRIEFING_TIME.split(":")
-    scheduler.add_job(send_briefing, CronTrigger(hour=int(hour), minute=int(minute)))
+    bh, bm = BRIEFING_TIME.split(":")
+    scheduler.add_job(send_briefing, CronTrigger(hour=int(bh), minute=int(bm)))
+
+    ch, cm = CHECKIN_TIME.split(":")
+    scheduler.add_job(send_evening_checkin, CronTrigger(hour=int(ch), minute=int(cm)))
+
     scheduler.start()
-    logger.info("Scheduler iniciado — briefing diario a las %s (Córdoba)", BRIEFING_TIME)
+    logger.info(
+        "Scheduler iniciado — briefing %s, check-in %s (Córdoba)",
+        BRIEFING_TIME, CHECKIN_TIME,
+    )
 
 
 @app.on_event("shutdown")
@@ -50,11 +58,20 @@ async def shutdown():
 
 @app.post("/trigger/briefing")
 async def trigger_briefing(x_token: str = Header(default="")):
-    """Dispara el briefing manualmente. Requiere header X-Token."""
+    """Dispara el briefing matutino manualmente. Requiere header X-Token."""
     if BRIEFING_TOKEN and x_token != BRIEFING_TOKEN:
         raise HTTPException(status_code=403, detail="Token inválido")
     asyncio.create_task(send_briefing())
     return {"status": "briefing enviado"}
+
+
+@app.post("/trigger/checkin")
+async def trigger_checkin(x_token: str = Header(default="")):
+    """Dispara el check-in vespertino manualmente. Requiere header X-Token."""
+    if BRIEFING_TOKEN and x_token != BRIEFING_TOKEN:
+        raise HTTPException(status_code=403, detail="Token inválido")
+    asyncio.create_task(send_evening_checkin())
+    return {"status": "check-in enviado"}
 
 
 @app.post("/webhook")
