@@ -786,9 +786,16 @@ def import_preview(user=Depends(require_auth)):
 
     to_import = [d for d in stats["detalles"] if d["accion"] == "importar"]
     to_skip   = [d for d in stats["detalles"] if d["accion"] == "omitido"]
+    merged    = stats.get("merged_groups", [])
 
     rows_new = "".join(
-        f"<tr><td>{r['caratula']}</td><td>{r.get('cliente','—')}</td><td>{r.get('juzgado','—')}</td></tr>"
+        f"""<tr>
+          <td>{r['caratula']}</td>
+          <td>{r.get('cliente','—')}
+            {"<br><small class='text-muted'>← " + r['cliente_original'] + "</small>" if r.get('cliente_original') else ""}
+          </td>
+          <td>{r.get('juzgado','—')}</td>
+        </tr>"""
         for r in to_import
     ) or '<tr><td colspan="3" class="text-muted text-center">Sin casos nuevos</td></tr>'
 
@@ -797,6 +804,25 @@ def import_preview(user=Depends(require_auth)):
         for r in to_skip
     ) or '<tr><td colspan="2" class="text-muted text-center">Ninguno</td></tr>'
 
+    merged_html = ""
+    if merged:
+        merged_rows = "".join(
+            f"<tr><td><strong>{g['canonical']}</strong></td>"
+            f"<td class='text-muted small'>{', '.join(g['variants'])}</td></tr>"
+            for g in merged
+        )
+        merged_html = f"""
+        <div class="card mb-3">
+          <div class="card-header fw-semibold text-warning">
+            <i class="bi bi-people me-1"></i>Clientes unificados automáticamente ({len(merged)})
+          </div>
+          <table class="table table-sm mb-0">
+            <thead class="table-light"><tr><th>Nombre canónico</th><th>Variantes detectadas</th></tr></thead>
+            <tbody>{merged_rows}</tbody>
+          </table>
+        </div>"""
+
+    n_new = stats['casos_nuevos']
     body = f"""
     <div class="row g-3 mb-3">
       <div class="col-md-3"><div class="card p-3 text-center">
@@ -804,7 +830,7 @@ def import_preview(user=Depends(require_auth)):
         <div class="text-muted">Filas en sheet</div>
       </div></div>
       <div class="col-md-3"><div class="card p-3 text-center">
-        <div class="fs-3 fw-bold text-success">{stats['casos_nuevos']}</div>
+        <div class="fs-3 fw-bold text-success">{n_new}</div>
         <div class="text-muted">Casos a importar</div>
       </div></div>
       <div class="col-md-3"><div class="card p-3 text-center">
@@ -812,19 +838,23 @@ def import_preview(user=Depends(require_auth)):
         <div class="text-muted">Clientes nuevos</div>
       </div></div>
       <div class="col-md-3"><div class="card p-3 text-center">
-        <div class="fs-3 fw-bold text-secondary">{stats['casos_existentes'] + stats['omitidos']}</div>
-        <div class="text-muted">Omitidos</div>
+        <div class="fs-3 fw-bold text-warning">{len(merged)}</div>
+        <div class="text-muted">Grupos unificados</div>
       </div></div>
     </div>
 
+    {merged_html}
+
     <div class="card mb-3">
       <div class="card-header fw-semibold text-success">
-        <i class="bi bi-check-circle me-1"></i>Se van a importar ({stats['casos_nuevos']})
+        <i class="bi bi-check-circle me-1"></i>Se van a importar ({n_new})
       </div>
-      <table class="table table-sm mb-0">
-        <thead class="table-light"><tr><th>Carátula</th><th>Cliente</th><th>Juzgado</th></tr></thead>
-        <tbody>{rows_new}</tbody>
-      </table>
+      <div style="max-height:400px;overflow-y:auto">
+        <table class="table table-sm mb-0">
+          <thead class="table-light"><tr><th>Carátula</th><th>Cliente</th><th>Juzgado</th></tr></thead>
+          <tbody>{rows_new}</tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card mb-4">
@@ -838,9 +868,8 @@ def import_preview(user=Depends(require_auth)):
     </div>
 
     <form method="post" action="/admin/import/run">
-      <button class="btn btn-success btn-lg" type="submit"
-              onclick="return confirm('Confirmar importacion de {stats['casos_nuevos']} casos?')">
-        <i class="bi bi-cloud-download me-2"></i>Importar {stats['casos_nuevos']} casos
+      <button class="btn btn-success btn-lg" type="submit">
+        <i class="bi bi-cloud-download me-2"></i>Importar {n_new} casos
       </button>
       <a href="/admin/import" class="btn btn-outline-secondary ms-2">Cancelar</a>
     </form>"""
