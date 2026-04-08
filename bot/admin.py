@@ -203,6 +203,7 @@ def clientes_list(user=Depends(require_auth)):
         </tr>"""
         for r in rows
     )
+    rows_json = _json.dumps([{"id": r["id"], "nombre": r["nombre"]} for r in rows])
     body = f"""
     <!-- Modal fusionar -->
     <div class="modal fade" id="mergeModal" tabindex="-1">
@@ -248,7 +249,7 @@ def clientes_list(user=Depends(require_auth)):
     </div>
 
     <script>
-    const allRows = {_json.dumps([{{"id": r["id"], "nombre": r["nombre"]}} for r in rows])};
+    const allRows = {rows_json};
 
     document.querySelectorAll('.client-cb').forEach(cb => {{
       cb.addEventListener('change', updateMergeBtn);
