@@ -15,7 +15,7 @@ from google_auth import get_credentials
 logger = logging.getLogger("import_causas")
 
 SHEET_ID = os.getenv("CAUSAS_SHEET_ID", "1LmF0vYJXPmUJ3mpIk4AUQGgc3bBWI8meAa-4e_e5uSA")
-SHEET_RANGE = "A:G"
+SHEET_RANGE = os.getenv("CAUSAS_SHEET_RANGE", "A:G")
 
 # Mapeo de encabezados del sheet a campos internos
 HEADER_MAP = {
@@ -55,12 +55,14 @@ def _read_sheet() -> list[dict]:
     ).execute()
 
     rows = result.get("values", [])
+    logger.info("Sheet devolvió %d filas. Primera fila: %s", len(rows), rows[0] if rows else "VACÍO")
     if not rows:
         return []
 
     # Primera fila = headers
     raw_headers = [h.strip() for h in rows[0]]
     headers = [HEADER_MAP.get(_normalize(h), _normalize(h)) for h in raw_headers]
+    logger.info("Headers detectados: %s", headers)
 
     records = []
     for row in rows[1:]:
@@ -104,7 +106,8 @@ def run_import(dry_run: bool = False) -> dict:
     try:
         records = _read_sheet()
     except Exception as e:
-        return {"error": str(e), "clientes_nuevos": 0, "casos_nuevos": 0, "omitidos": 0}
+        import traceback
+        return {"error": f"{type(e).__name__}: {e}\n{traceback.format_exc()}", "clientes_nuevos": 0, "casos_nuevos": 0, "omitidos": 0}
 
     stats = {
         "total_filas": len(records),
