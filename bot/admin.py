@@ -1207,14 +1207,58 @@ def _infer_tipo(titulo: str) -> str:
     return "otro"
 
 
-def _score_event_case(event_summary: str, caratula: str) -> int:
-    """Puntaje de coincidencia entre título de evento y carátula de caso."""
-    summary_lower = event_summary.lower()
-    caratula_lower = caratula.lower()
-    # Palabras significativas (> 3 chars, no stop words)
-    stop = {"del", "los", "las", "con", "para", "por", "una", "uno", "que", "como"}
-    words = [w for w in caratula_lower.split() if len(w) > 3 and w not in stop]
-    return sum(1 for w in words if w in summary_lower)
+import unicodedata as _ud
+
+
+def _norm(s: str) -> str:
+    """Minúsculas, sin tildes, espacios colapsados."""
+    s = _ud.normalize("NFD", s.lower())
+    s = "".join(c for c in s if _ud.category(c) != "Mn")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _extract_parties(caratula: str) -> list[str]:
+    """
+    Extrae las partes de una carátula.
+    'García c/ López - Daños y Perjuicios' → ['garcia', 'lopez']
+    """
+    # Separadores: c/, vs., contra
+    parts = re.split(r"\bc/\b|\bvs\.?\b|\bcontra\b", caratula, flags=re.IGNORECASE)
+    parties = []
+    for p in parts:
+        # Cortar en el primer " - " (materia/observación)
+        p = re.split(r"\s+-\s+", p)[0]
+        # Quitar sufijos societarios
+        p = re.sub(r"\b(s\.?a\.?s?\.?|s\.?r\.?l\.?|s\.?a\.?|sa|srl)\b", "", p, flags=re.IGNORECASE)
+        p = _norm(p).strip(" .,")
+        if len(p) > 2:
+            parties.append(p)
+    return parties
+
+
+def _score_event_case(event_summary: str, caratula: str, event_description: str = "") -> int:
+    """
+    Puntaje de coincidencia entre título de evento y carátula de caso.
+    Extrae los apellidos/nombres de las partes y los busca en el evento.
+    Un apellido presente suma más que una palabra genérica.
+    """
+    norm_ev = _norm(event_summary + " " + event_description)
+    parties = _extract_parties(caratula)
+
+    score = 0
+    stop = {"del", "los", "las", "con", "para", "por", "una", "uno", "que", "como",
+            "sobre", "ante", "desde", "hasta", "entre", "bajo", "sin"}
+
+    for party in parties:
+        words = [w for w in party.split() if len(w) > 2 and w not in stop]
+        for word in words:
+            if word in norm_ev:
+                score += 3          # cada apellido/palabra de parte vale 3
+        # Bonus si el nombre completo de la parte aparece en el evento
+        if len(party) > 4 and party in norm_ev:
+            score += 5
+
+    return score
 
 
 @router.get("/import-calendar", response_class=HTMLResponse)
@@ -1222,11 +1266,12 @@ def import_calendar_get(user=Depends(require_auth)):
     body = """
     <div class="card mb-4">
       <div class="card-body">
-        <p>Lee todos los eventos del calendario entre <strong>enero 2025</strong> y <strong>hoy</strong>
-           e intenta asociarlos a causas existentes en la base de datos.</p>
+        <p>Lee los eventos del calendario desde <strong>enero 2026 hasta hoy</strong>
+           e intenta asociarlos a causas existentes por coincidencia de apellidos/partes.</p>
         <p class="text-muted small mb-3">
-          Podés ajustar la causa asignada en la previsualización antes de confirmar.
-          Los eventos ya registrados (mismo ID de calendario) serán omitidos automáticamente.
+          Se filtran automáticamente HOME OFFICE, VACACIONES y similares.
+          Podés ajustar la causa y el cliente antes de confirmar.
+          Los eventos ya registrados (mismo ID de calendario) se omiten.
         </p>
         <form method="post" action="/admin/import-calendar/preview">
           <button class="btn btn-outline-primary" type="submit">
@@ -1261,7 +1306,7 @@ def import_calendar_preview(user=Depends(require_auth)):
                 pass
         calendar_id = raw_cal
 
-        time_min = "2025-01-01T00:00:00Z"
+        time_min = "2026-01-01T00:00:00Z"
         time_max = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         events = []
@@ -1309,6 +1354,7 @@ def import_calendar_preview(user=Depends(require_auth)):
     for ev in events:
         ev_id = ev.get("id", "")
         titulo = ev.get("summary", "(sin título)")
+        descripcion = ev.get("description") or ""
         start = ev.get("start", {})
         fecha = start.get("dateTime") or start.get("date") or ""
         fecha_short = fecha[:10]
@@ -1326,11 +1372,11 @@ def import_calendar_preview(user=Depends(require_auth)):
 
         tipo_sugerido = _infer_tipo(titulo)
 
-        # Buscar mejor caso sugerido por palabras clave
+        # Buscar mejor caso sugerido — apellidos de las partes vs. título+descripción
         best_caso_id = ""
         best_score = 0
         for c in casos:
-            s = _score_event_case(titulo, c["caratula"])
+            s = _score_event_case(titulo, c["caratula"], descripcion)
             if s > best_score:
                 best_score = s
                 best_caso_id = str(c["id"])
@@ -1340,15 +1386,18 @@ def import_calendar_preview(user=Depends(require_auth)):
             for c in casos
         )
         score_badge = (
-            f'<span class="badge bg-success ms-1" title="coincidencia automática">{best_score}✓</span>'
-            if best_score > 0 else
-            '<span class="badge bg-light text-muted border ms-1">sin match</span>'
+            f'<span class="badge bg-success ms-1" title="coincidencia automática">✓ {best_score}pts</span>'
+            if best_score >= 3 else
+            (f'<span class="badge bg-warning text-dark ms-1" title="coincidencia débil">~ {best_score}pts</span>'
+             if best_score > 0 else
+             '<span class="badge bg-light text-muted border ms-1">sin match</span>')
         )
         safe_titulo = titulo.replace('"', '&quot;')
+        auto_checked = best_score >= 3   # solo pre-marcar si hay apellido confirmado
 
         rows_html += f"""
         <tr>
-          <td><input type="checkbox" name="incluir" value="{ev_id}" class="form-check-input" {"checked" if best_score > 0 else ""}></td>
+          <td><input type="checkbox" name="incluir" value="{ev_id}" class="form-check-input" {"checked" if auto_checked else ""}></td>
           <td class="small">{fecha_short}</td>
           <td>
             {titulo} {score_badge}
@@ -1364,7 +1413,7 @@ def import_calendar_preview(user=Depends(require_auth)):
           </td>
           <td>
             <select name="cliente_{ev_id}" class="form-select form-select-sm"
-                    {"style='display:none'" if best_score > 0 else ""}>{clientes_opts}</select>
+                    {"style='display:none'" if best_score >= 3 else ""}>{clientes_opts}</select>
           </td>
           <td>
             <select name="tipo_{ev_id}" class="form-select form-select-sm">
