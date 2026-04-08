@@ -3,22 +3,29 @@ import logging
 import os
 
 import httpx
-from fastapi import FastAPI, Request
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from fastapi import FastAPI, Request, Header, HTTPException
 
 from agent import process_message
 from admin import router as admin_router
+from briefing import send_briefing
 from db import init_db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger("bot")
 
 WA_BRIDGE_URL = os.getenv("WA_BRIDGE_URL", "http://whatsapp-bridge:8080")
-# Palabra clave para activar el bot. Solo responde si el mensaje la contiene.
 BOT_TRIGGER = os.getenv("BOT_TRIGGER", "lexia").lower()
-# Lista de JIDs autorizados separados por coma. Si está vacía, acepta cualquiera.
-# Ejemplos: "5493512345678@s.whatsapp.net" (privado) o "123@g.us" (grupo)
 _raw_allowed = os.getenv("ALLOWED_CHATS", "")
 ALLOWED_CHATS: set[str] = {j.strip() for j in _raw_allowed.split(",") if j.strip()}
+
+# Briefing: hora en formato "HH:MM" (zona America/Argentina/Cordoba)
+BRIEFING_TIME = os.getenv("BRIEFING_TIME", "08:00")
+# Token para disparar el briefing manualmente vía POST /trigger/briefing
+BRIEFING_TOKEN = os.getenv("BRIEFING_TOKEN", "")
+
+scheduler = AsyncIOScheduler(timezone="America/Argentina/Cordoba")
 
 app = FastAPI(title="Del Castillo Bot")
 app.include_router(admin_router)
@@ -27,6 +34,25 @@ app.include_router(admin_router)
 async def startup():
     init_db()
     logger.info("Base de datos inicializada")
+
+    hour, minute = BRIEFING_TIME.split(":")
+    scheduler.add_job(send_briefing, CronTrigger(hour=int(hour), minute=int(minute)))
+    scheduler.start()
+    logger.info("Scheduler iniciado — briefing diario a las %s (Córdoba)", BRIEFING_TIME)
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    scheduler.shutdown(wait=False)
+
+
+@app.post("/trigger/briefing")
+async def trigger_briefing(x_token: str = Header(default="")):
+    """Dispara el briefing manualmente. Requiere header X-Token."""
+    if BRIEFING_TOKEN and x_token != BRIEFING_TOKEN:
+        raise HTTPException(status_code=403, detail="Token inválido")
+    asyncio.create_task(send_briefing())
+    return {"status": "briefing enviado"}
 
 
 @app.post("/webhook")
