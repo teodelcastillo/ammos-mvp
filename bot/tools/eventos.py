@@ -26,7 +26,11 @@ eventos_tools = [
             "properties": {
                 "caso_id": {
                     "type": "integer",
-                    "description": "ID del caso al que pertenece el evento",
+                    "description": "ID numérico del caso. Si no se conoce, usar caso_busqueda.",
+                },
+                "caso_busqueda": {
+                    "type": "string",
+                    "description": "Texto para buscar el caso por nombre/carátula cuando no se conoce el ID. Ej: 'García', 'Municipalidad'.",
                 },
                 "titulo": {
                     "type": "string",
@@ -54,7 +58,7 @@ eventos_tools = [
                     "description": "Ubicación del evento (opcional, ej: 'Juzgado Civil Nro 4')",
                 },
             },
-            "required": ["caso_id", "titulo", "fecha", "tipo"],
+            "required": ["titulo", "fecha", "tipo"],
         },
     },
     {
@@ -67,12 +71,9 @@ eventos_tools = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "caso_id": {
-                    "type": "integer",
-                    "description": "ID del caso",
-                },
+                "caso_id": {"type": "integer", "description": "ID numérico del caso."},
+                "caso_busqueda": {"type": "string", "description": "Texto para buscar el caso si no se conoce el ID."},
             },
-            "required": ["caso_id"],
         },
     },
     {
@@ -81,16 +82,49 @@ eventos_tools = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "caso_id": {"type": "integer", "description": "ID del caso"},
+                "caso_id": {"type": "integer", "description": "ID numérico del caso."},
+                "caso_busqueda": {"type": "string", "description": "Texto para buscar el caso si no se conoce el ID."},
             },
-            "required": ["caso_id"],
         },
     },
 ]
 
 
+def _resolve_caso(data: dict) -> tuple[int | None, str | None]:
+    """
+    Resuelve caso_id a partir de data.
+    Acepta caso_id directo o busca por caso_busqueda.
+    Retorna (caso_id, error_msg).
+    """
+    if cid := data.get("caso_id"):
+        return int(cid), None
+
+    busqueda = (data.get("caso_busqueda") or "").strip()
+    if not busqueda:
+        return None, "Se requiere caso_id o caso_busqueda para identificar el caso."
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, caratula FROM casos WHERE caratula LIKE ? ORDER BY id LIMIT 5",
+            (f"%{busqueda}%",)
+        ).fetchall()
+
+    if not rows:
+        return None, f"No se encontró ningún caso que coincida con '{busqueda}'."
+    if len(rows) > 1:
+        opciones = ", ".join(f"#{r[0]} {r[1]}" for r in rows)
+        return None, f"Se encontraron varios casos: {opciones}. Indicá el ID exacto."
+
+    return rows[0][0], None
+
+
 async def handle_eventos_tool(name: str, data: dict) -> dict:
     try:
+        caso_id, err = _resolve_caso(data)
+        if err:
+            return {"error": err}
+        data["caso_id"] = caso_id
+
         if name == "evento_registrar":
             return await _evento_registrar(data)
         elif name == "caso_historial":

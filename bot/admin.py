@@ -296,6 +296,7 @@ def clientes_ver(cid: int, user=Depends(require_auth)):
 
     n_casos = len(casos)
     delete_warn = f"Este cliente tiene {n_casos} caso(s) asociado(s) que quedarán sin cliente asignado. " if n_casos else ""
+    safe_nombre = c["nombre"].replace("'", "")
     body = f"""
     {_form_cliente(c)}
     <div class="card mt-4">
@@ -304,7 +305,7 @@ def clientes_ver(cid: int, user=Depends(require_auth)):
     </div>
     <div class="mt-4">
       <form method="post" action="/admin/clientes/{cid}/eliminar"
-            onsubmit="return confirm('{delete_warn}¿Eliminar cliente {c[&quot;nombre&quot;].replace(&quot;'&quot;, &quot;&quot;)}?')">
+            onsubmit="return confirm('{delete_warn}¿Eliminar cliente {safe_nombre}?')">
         <button type="submit" class="btn btn-outline-danger btn-sm">
           <i class="bi bi-trash me-1"></i>Eliminar cliente
         </button>
