@@ -26,6 +26,7 @@ def _migrate(conn):
             notas             TEXT,
             creado_en         DATETIME DEFAULT CURRENT_TIMESTAMP
         )""",
+        "ALTER TABLE eventos_caso ADD COLUMN cliente_id INTEGER REFERENCES clientes(id)",
         """CREATE TABLE IF NOT EXISTS solicitudes_baja (
             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
             tipo                TEXT NOT NULL,
@@ -102,6 +103,7 @@ def init_db():
             CREATE TABLE IF NOT EXISTS eventos_caso (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
                 caso_id           INTEGER REFERENCES casos(id) ON DELETE CASCADE,
+                cliente_id        INTEGER REFERENCES clientes(id),
                 calendar_event_id TEXT,
                 calendar_link     TEXT,
                 titulo            TEXT NOT NULL,

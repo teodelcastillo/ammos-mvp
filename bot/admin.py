@@ -4,6 +4,7 @@ Rutas bajo /admin — protegidas con HTTP Basic Auth.
 """
 
 import os
+import re
 import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request, Form, status
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -1175,18 +1176,34 @@ def solicitud_rechazar(sid: int, user=Depends(require_auth)):
 # IMPORTAR DESDE CALENDARIO
 # ──────────────────────────────────────────────
 
+# Eventos del calendario que NO son causas (se filtran en la importación)
+_SKIP_KEYWORDS = [
+    "home office", "vacaciones", "feriado", "feriados",
+    "cumpleaños", "birthday", "franco", "licencia", "día libre",
+]
+
+def _should_skip_event(titulo: str) -> bool:
+    t = titulo.lower()
+    return any(kw in t for kw in _SKIP_KEYWORDS)
+
+
 def _infer_tipo(titulo: str) -> str:
     t = titulo.lower()
-    if any(w in t for w in ["audiencia", "vista", "oral"]):
+    # Audiencias: "audiencia", "vista de causa", "oral" o abreviatura "aud"
+    if any(w in t for w in ["audiencia", "vista", "oral"]) or re.search(r'\baud[\s\.\-]', t):
         return "audiencia"
+    # Vencimientos: "vence", "vto", "vtto", "vencimiento", "plazo"
+    if any(w in t for w in ["vencimiento", "vence", "vto.", "vtto", "plazo", "término", "termino"]):
+        return "vencimiento"
+    # Mediaciones
     if any(w in t for w in ["mediación", "mediacion"]):
         return "mediacion"
+    # Pericias
     if any(w in t for w in ["pericia", "perito", "peritos"]):
         return "pericia"
+    # Reuniones
     if any(w in t for w in ["reunión", "reunion", "entrevista"]):
         return "reunion"
-    if any(w in t for w in ["vencimiento", "plazo", "término", "termino"]):
-        return "vencimiento"
     return "otro"
 
 
@@ -1272,18 +1289,23 @@ def import_calendar_preview(user=Depends(require_auth)):
         casos = rows_to_list(conn.execute(
             "SELECT id, caratula FROM casos ORDER BY caratula"
         ).fetchall())
+        clientes = rows_to_list(conn.execute(
+            "SELECT id, nombre FROM clientes ORDER BY nombre"
+        ).fetchall())
         existing_ids = {
-            r[0] for r in conn.execute("SELECT calendar_event_id FROM eventos_caso WHERE calendar_event_id IS NOT NULL").fetchall()
+            r[0] for r in conn.execute(
+                "SELECT calendar_event_id FROM eventos_caso WHERE calendar_event_id IS NOT NULL"
+            ).fetchall()
         }
 
-    # Construir opciones de casos para el select
-    casos_opts = '<option value="">— Sin asignar —</option>' + "".join(
-        f'<option value="{c["id"]}">{c["caratula"]}</option>' for c in casos
+    clientes_opts = '<option value="">— Sin cliente —</option>' + "".join(
+        f'<option value="{c["id"]}">{c["nombre"]}</option>' for c in clientes
     )
 
     rows_html = ""
     n_total = 0
-    n_skip = 0
+    n_already = 0
+    n_filtered = 0
     for ev in events:
         ev_id = ev.get("id", "")
         titulo = ev.get("summary", "(sin título)")
@@ -1291,13 +1313,20 @@ def import_calendar_preview(user=Depends(require_auth)):
         fecha = start.get("dateTime") or start.get("date") or ""
         fecha_short = fecha[:10]
         cal_link = ev.get("htmlLink", "")
-        tipo_sugerido = _infer_tipo(titulo)
 
+        # Omitir ya registrados
         if ev_id in existing_ids:
-            n_skip += 1
+            n_already += 1
             continue
 
-        # Buscar mejor caso sugerido
+        # Filtrar eventos no jurídicos (home office, vacaciones, etc.)
+        if _should_skip_event(titulo):
+            n_filtered += 1
+            continue
+
+        tipo_sugerido = _infer_tipo(titulo)
+
+        # Buscar mejor caso sugerido por palabras clave
         best_caso_id = ""
         best_score = 0
         for c in casos:
@@ -1306,12 +1335,16 @@ def import_calendar_preview(user=Depends(require_auth)):
                 best_score = s
                 best_caso_id = str(c["id"])
 
-        # Build select with pre-selected best match
-        sel_opts = '<option value="">— Sin asignar —</option>' + "".join(
+        sel_opts = '<option value="">— Sin causa —</option>' + "".join(
             f'<option value="{c["id"]}" {"selected" if str(c["id"]) == best_caso_id and best_score > 0 else ""}>{c["caratula"]}</option>'
             for c in casos
         )
-        score_badge = f'<span class="badge bg-success ms-1" title="coincidencia automática">{best_score}✓</span>' if best_score > 0 else '<span class="badge bg-light text-muted ms-1">sin match</span>'
+        score_badge = (
+            f'<span class="badge bg-success ms-1" title="coincidencia automática">{best_score}✓</span>'
+            if best_score > 0 else
+            '<span class="badge bg-light text-muted border ms-1">sin match</span>'
+        )
+        safe_titulo = titulo.replace('"', '&quot;')
 
         rows_html += f"""
         <tr>
@@ -1321,12 +1354,17 @@ def import_calendar_preview(user=Depends(require_auth)):
             {titulo} {score_badge}
             {"" if not cal_link else f'<a href="{cal_link}" target="_blank" class="ms-1 text-muted"><i class="bi bi-box-arrow-up-right"></i></a>'}
             <input type="hidden" name="ev_id" value="{ev_id}">
-            <input type="hidden" name="ev_titulo" value="{titulo.replace(chr(34), '&quot;')}">
+            <input type="hidden" name="ev_titulo" value="{safe_titulo}">
             <input type="hidden" name="ev_fecha" value="{fecha}">
             <input type="hidden" name="ev_link" value="{cal_link}">
           </td>
           <td>
-            <select name="caso_{ev_id}" class="form-select form-select-sm">{sel_opts}</select>
+            <select name="caso_{ev_id}" class="form-select form-select-sm caso-sel"
+                    data-evid="{ev_id}" onchange="toggleCliente(this)">{sel_opts}</select>
+          </td>
+          <td>
+            <select name="cliente_{ev_id}" class="form-select form-select-sm"
+                    {"style='display:none'" if best_score > 0 else ""}>{clientes_opts}</select>
           </td>
           <td>
             <select name="tipo_{ev_id}" class="form-select form-select-sm">
@@ -1340,11 +1378,15 @@ def import_calendar_preview(user=Depends(require_auth)):
     <div class="row g-3 mb-4">
       <div class="col-md-3"><div class="card p-3 text-center">
         <div class="fs-3 fw-bold text-primary">{len(events)}</div>
-        <div class="text-muted">Eventos en calendario</div>
+        <div class="text-muted">Total en calendario</div>
       </div></div>
       <div class="col-md-3"><div class="card p-3 text-center">
-        <div class="fs-3 fw-bold text-secondary">{n_skip}</div>
+        <div class="fs-3 fw-bold text-secondary">{n_already}</div>
         <div class="text-muted">Ya registrados</div>
+      </div></div>
+      <div class="col-md-3"><div class="card p-3 text-center">
+        <div class="fs-3 fw-bold text-muted">{n_filtered}</div>
+        <div class="text-muted">Filtrados (HO / Vac.)</div>
       </div></div>
       <div class="col-md-3"><div class="card p-3 text-center">
         <div class="fs-3 fw-bold text-success">{n_total}</div>
@@ -1364,10 +1406,17 @@ def import_calendar_preview(user=Depends(require_auth)):
         <div style="max-height:60vh;overflow-y:auto">
           <table class="table table-hover table-sm mb-0">
             <thead class="table-light sticky-top">
-              <tr><th style="width:30px"></th><th style="width:90px">Fecha</th><th>Título</th><th style="width:260px">Causa</th><th style="width:120px">Tipo</th></tr>
+              <tr>
+                <th style="width:30px"></th>
+                <th style="width:90px">Fecha</th>
+                <th>Título</th>
+                <th style="width:220px">Causa</th>
+                <th style="width:180px">Cliente <small class="text-muted">(si no hay causa)</small></th>
+                <th style="width:120px">Tipo</th>
+              </tr>
             </thead>
             <tbody>
-              {rows_html or '<tr><td colspan="5" class="text-center text-muted py-3">Sin eventos nuevos para importar</td></tr>'}
+              {rows_html or '<tr><td colspan="6" class="text-center text-muted py-3">Sin eventos nuevos para importar</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -1380,6 +1429,15 @@ def import_calendar_preview(user=Depends(require_auth)):
     <script>
     function toggleAll(val) {{
       document.querySelectorAll('input[name="incluir"]').forEach(cb => cb.checked = val);
+    }}
+    // Mostrar selector de cliente solo cuando no hay causa seleccionada
+    function toggleCliente(casoSel) {{
+      const row = casoSel.closest('tr');
+      const clienteSel = row.querySelector('select[name^="cliente_"]');
+      if (clienteSel) {{
+        clienteSel.style.display = casoSel.value ? 'none' : '';
+        if (casoSel.value) clienteSel.value = '';
+      }}
     }}
     </script>"""
     return _page("Previsualización calendario", body, "Importar calendario")
@@ -1405,8 +1463,10 @@ async def import_calendar_run(request: Request, user=Depends(require_auth)):
             fecha = ev_fechas[i] if i < len(ev_fechas) else ""
             link = ev_links[i] if i < len(ev_links) else ""
             caso_id_raw = form.get(f"caso_{ev_id}", "")
+            cliente_id_raw = form.get(f"cliente_{ev_id}", "")
             tipo = form.get(f"tipo_{ev_id}", "otro")
             caso_id = int(caso_id_raw) if caso_id_raw else None
+            cliente_id = int(cliente_id_raw) if cliente_id_raw else None
 
             # Skip si ya existe
             exists = conn.execute(
@@ -1418,9 +1478,9 @@ async def import_calendar_run(request: Request, user=Depends(require_auth)):
 
             conn.execute(
                 """INSERT INTO eventos_caso
-                   (caso_id, calendar_event_id, calendar_link, titulo, fecha, tipo)
-                   VALUES (?,?,?,?,?,?)""",
-                (caso_id, ev_id, link, titulo, fecha, tipo)
+                   (caso_id, cliente_id, calendar_event_id, calendar_link, titulo, fecha, tipo)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (caso_id, cliente_id, ev_id, link, titulo, fecha, tipo)
             )
             inserted += 1
 
