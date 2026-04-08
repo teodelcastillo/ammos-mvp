@@ -188,29 +188,90 @@ def dashboard(user=Depends(require_auth)):
 @router.get("/clientes", response_class=HTMLResponse)
 def clientes_list(user=Depends(require_auth)):
     with get_conn() as conn:
-        rows = rows_to_list(conn.execute("SELECT * FROM clientes ORDER BY nombre").fetchall())
+        rows = rows_to_list(conn.execute(
+            "SELECT c.*, COUNT(ca.id) AS n_casos FROM clientes c "
+            "LEFT JOIN casos ca ON ca.cliente_id=c.id GROUP BY c.id ORDER BY c.nombre"
+        ).fetchall())
 
     rows_html = "".join(
         f"""<tr>
+          <td><input type="checkbox" class="form-check-input client-cb" value="{r['id']}"></td>
           <td><a href="/admin/clientes/{r['id']}">{r['nombre']}</a></td>
           <td>{r.get('cuit') or '—'}</td>
           <td>{r.get('email') or '—'}</td>
-          <td>{r.get('telefono') or '—'}</td>
+          <td><span class="badge bg-secondary">{r['n_casos']}</span></td>
         </tr>"""
         for r in rows
     )
     body = f"""
-    <div class="mb-3 text-end">
-      <a href="/admin/clientes/nuevo" class="btn btn-primary">
+    <!-- Modal fusionar -->
+    <div class="modal fade" id="mergeModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header"><h5 class="modal-title">Fusionar clientes</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <form method="post" action="/admin/clientes/fusionar">
+            <div class="modal-body">
+              <p class="text-muted small">Se fusionarán los clientes seleccionados. Todos sus casos quedarán bajo el nombre canónico.</p>
+              <div id="selectedNames" class="mb-3 text-muted small"></div>
+              <label class="form-label fw-semibold">Nombre canónico del cliente fusionado *</label>
+              <input name="nombre_canonico" id="nombreCanonico" class="form-control" required placeholder="Ej: Estudio O'Farrell - FORD">
+              <input type="hidden" name="ids" id="mergeIds">
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+              <button type="submit" class="btn btn-warning">
+                <i class="bi bi-people-fill me-1"></i>Fusionar
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="mb-3 d-flex justify-content-between align-items-center">
+      <button id="btnMerge" class="btn btn-warning d-none" onclick="openMerge()">
+        <i class="bi bi-people-fill me-1"></i>Fusionar seleccionados
+      </button>
+      <a href="/admin/clientes/nuevo" class="btn btn-primary ms-auto">
         <i class="bi bi-plus-lg me-1"></i>Nuevo cliente
       </a>
     </div>
     <div class="card">
       <table class="table table-hover mb-0">
-        <thead class="table-light"><tr><th>Nombre</th><th>CUIT</th><th>Email</th><th>Teléfono</th></tr></thead>
-        <tbody>{rows_html or '<tr><td colspan="4" class="text-center text-muted py-3">Sin clientes</td></tr>'}</tbody>
+        <thead class="table-light">
+          <tr><th style="width:36px"></th><th>Nombre</th><th>CUIT</th><th>Email</th><th>Causas</th></tr>
+        </thead>
+        <tbody>{rows_html or '<tr><td colspan="5" class="text-center text-muted py-3">Sin clientes</td></tr>'}</tbody>
       </table>
-    </div>"""
+    </div>
+
+    <script>
+    const allRows = {_json.dumps([{{"id": r["id"], "nombre": r["nombre"]}} for r in rows])};
+
+    document.querySelectorAll('.client-cb').forEach(cb => {{
+      cb.addEventListener('change', updateMergeBtn);
+    }});
+
+    function getSelected() {{
+      return [...document.querySelectorAll('.client-cb:checked')].map(cb => parseInt(cb.value));
+    }}
+
+    function updateMergeBtn() {{
+      const sel = getSelected();
+      document.getElementById('btnMerge').classList.toggle('d-none', sel.length < 2);
+    }}
+
+    function openMerge() {{
+      const ids = getSelected();
+      const names = ids.map(id => allRows.find(r => r.id === id)?.nombre || id);
+      document.getElementById('selectedNames').innerHTML = names.map(n => `<span class="badge bg-light text-dark border me-1">${{n}}</span>`).join('');
+      document.getElementById('nombreCanonico').value = names[0];
+      document.getElementById('mergeIds').value = ids.join(',');
+      new bootstrap.Modal(document.getElementById('mergeModal')).show();
+    }}
+    </script>"""
     return _page("Clientes", body)
 
 
@@ -232,11 +293,22 @@ def clientes_ver(cid: int, user=Depends(require_auth)):
         f'{_badge_estado(r["estado"])}</li>'
         for r in casos
     ) or '<li class="list-group-item text-muted">Sin casos asociados</li>'
+
+    n_casos = len(casos)
+    delete_warn = f"Este cliente tiene {n_casos} caso(s) asociado(s) que quedarán sin cliente asignado. " if n_casos else ""
     body = f"""
     {_form_cliente(c)}
     <div class="card mt-4">
       <div class="card-header fw-semibold">Casos asociados</div>
       <ul class="list-group list-group-flush">{casos_html}</ul>
+    </div>
+    <div class="mt-4">
+      <form method="post" action="/admin/clientes/{cid}/eliminar"
+            onsubmit="return confirm('{delete_warn}¿Eliminar cliente {c[&quot;nombre&quot;].replace(&quot;'&quot;, &quot;&quot;)}?')">
+        <button type="submit" class="btn btn-outline-danger btn-sm">
+          <i class="bi bi-trash me-1"></i>Eliminar cliente
+        </button>
+      </form>
     </div>"""
     return _page(c["nombre"], body, "Editar")
 
@@ -252,6 +324,42 @@ def clientes_crear(
             "INSERT INTO clientes (nombre,cuit,email,telefono,domicilio,notas) VALUES (?,?,?,?,?,?)",
             (nombre, cuit, email, telefono, domicilio, notas)
         )
+    return RedirectResponse("/admin/clientes", status_code=303)
+
+
+@router.post("/clientes/fusionar")
+def clientes_fusionar(
+    ids: str = Form(...),
+    nombre_canonico: str = Form(...),
+    user=Depends(require_auth)
+):
+    id_list = [int(i.strip()) for i in ids.split(",") if i.strip().isdigit()]
+    if len(id_list) < 2:
+        raise HTTPException(400, "Se necesitan al menos 2 clientes")
+    with get_conn() as conn:
+        # Crear o buscar el cliente canónico
+        existing = conn.execute(
+            "SELECT id FROM clientes WHERE LOWER(TRIM(nombre))=LOWER(TRIM(?))", (nombre_canonico,)
+        ).fetchone()
+        if existing:
+            canonical_id = existing[0]
+        else:
+            cur = conn.execute("INSERT INTO clientes (nombre) VALUES (?)", (nombre_canonico,))
+            canonical_id = cur.lastrowid
+        # Reasignar todos los casos de los clientes a fusionar
+        for old_id in id_list:
+            if old_id == canonical_id:
+                continue
+            conn.execute("UPDATE casos SET cliente_id=? WHERE cliente_id=?", (canonical_id, old_id))
+            conn.execute("DELETE FROM clientes WHERE id=?", (old_id,))
+    return RedirectResponse(f"/admin/clientes/{canonical_id}", status_code=303)
+
+
+@router.post("/clientes/{cid}/eliminar")
+def clientes_eliminar(cid: int, user=Depends(require_auth)):
+    with get_conn() as conn:
+        conn.execute("UPDATE casos SET cliente_id=NULL WHERE cliente_id=?", (cid,))
+        conn.execute("DELETE FROM clientes WHERE id=?", (cid,))
     return RedirectResponse("/admin/clientes", status_code=303)
 
 
