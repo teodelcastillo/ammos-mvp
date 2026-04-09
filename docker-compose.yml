@@ -34,6 +34,27 @@ services:
       - DB_PATH=/app/data/estudio.db
     restart: unless-stopped
 
+  facturas:
+    build: ./gestion-facturas
+    container_name: facturas-app
+    ports:
+      - "3000:3000"
+    volumes:
+      - facturas-data:/app/data
+    environment:
+      - FACTURAS_DB_PATH=/app/data/facturas.db
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - SESSION_SECRET=${SESSION_SECRET:-changeme-min-32-chars-secret-key!!}
+      - TUSFACTURAS_API_TOKEN=${TUSFACTURAS_API_TOKEN}
+      - TUSFACTURAS_API_KEY=${TUSFACTURAS_API_KEY}
+      - TUSFACTURAS_USER_TOKEN=${TUSFACTURAS_USER_TOKEN}
+      - TUSFACTURAS_PUNTO_VENTA=${TUSFACTURAS_PUNTO_VENTA}
+      - TUSFACTURAS_ENV=${TUSFACTURAS_ENV:-sandbox}
+      - NODE_ENV=production
+    restart: unless-stopped
+
 volumes:
   wa-data:
   bot-data:
+  facturas-data:
