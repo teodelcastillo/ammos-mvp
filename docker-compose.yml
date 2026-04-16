@@ -7,17 +7,40 @@ services:
     volumes:
       - wa-data:/data
     environment:
-      - BOT_WEBHOOK_URL=http://bot:8000/webhook
-      - BOT_NAME=${BOT_NAME:-Bot}
+      # Apuntamos el bridge al ammos-bot para el MVP.
+      # Para volver al bot legal, cambiar a http://bot:8000/webhook
+      - BOT_WEBHOOK_URL=${BOT_WEBHOOK_URL:-http://ammos-bot:8000/webhook}
+      - BOT_NAME=${BOT_NAME:-Ammos}
       - LISTEN_ADDR=:8080
     depends_on:
-      bot:
+      ammos-bot:
         condition: service_started
     restart: unless-stopped
 
+  ammos-bot:
+    build: ./ammos-bot
+    container_name: ammos-bot
+    ports:
+      - "8001:8000"
+    volumes:
+      - ammos-data:/app/data
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - WA_BRIDGE_URL=http://whatsapp-bridge:8080
+      - ADMIN_TOKEN=${ADMIN_TOKEN:-dev-token-change-me}
+      - SEND_ENABLED=${SEND_ENABLED:-false}
+      - TIMEZONE=${TIMEZONE:-America/Argentina/Cordoba}
+      - DB_PATH=/app/data/ammos.db
+      - SCHEDULER_INTERVAL_SEC=${SCHEDULER_INTERVAL_SEC:-30}
+      - MAX_MSG_PER_SEC=${MAX_MSG_PER_SEC:-1}
+    restart: unless-stopped
+
+  # Bot legal original. Lo dejamos disponible pero no arranca por default.
+  # Para correrlo: docker compose --profile legal up bot
   bot:
     build: ./bot
     container_name: wa-bot
+    profiles: ["legal"]
     ports:
       - "8000:8000"
     volumes:
@@ -34,27 +57,7 @@ services:
       - DB_PATH=/app/data/estudio.db
     restart: unless-stopped
 
-  facturas:
-    build: ./gestion-facturas
-    container_name: facturas-app
-    ports:
-      - "3000:3000"
-    volumes:
-      - facturas-data:/app/data
-    environment:
-      - FACTURAS_DB_PATH=/app/data/facturas.db
-      - ADMIN_USER=${ADMIN_USER:-admin}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
-      - SESSION_SECRET=${SESSION_SECRET:-changeme-min-32-chars-secret-key!!}
-      - TUSFACTURAS_API_TOKEN=${TUSFACTURAS_API_TOKEN}
-      - TUSFACTURAS_API_KEY=${TUSFACTURAS_API_KEY}
-      - TUSFACTURAS_USER_TOKEN=${TUSFACTURAS_USER_TOKEN}
-      - TUSFACTURAS_PUNTO_VENTA=${TUSFACTURAS_PUNTO_VENTA}
-      - TUSFACTURAS_ENV=${TUSFACTURAS_ENV:-sandbox}
-      - NODE_ENV=production
-    restart: unless-stopped
-
 volumes:
   wa-data:
+  ammos-data:
   bot-data:
-  facturas-data:
